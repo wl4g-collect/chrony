@@ -28,6 +28,7 @@
 #include "config.h"
 
 #include "clientlog.h"
+#include "cmac.h"
 #include "cmdmon.h"
 #include "keys.h"
 #include "logging.h"
@@ -39,12 +40,16 @@
 #include "ntp_io.h"
 #include "ntp_sources.h"
 #include "ntp_signd.h"
+#include "nts_ke_client.h"
+#include "nts_ke_server.h"
+#include "nts_ntp_client.h"
+#include "nts_ntp_server.h"
 #include "privops.h"
 #include "refclock.h"
 #include "sched.h"
 #include "util.h"
 
-#ifndef FEAT_ASYNCDNS
+#if defined(FEAT_NTP) && !defined(FEAT_ASYNCDNS)
 
 /* This is a blocking implementation used when asynchronous resolving is not available */
 
@@ -107,7 +112,7 @@ DNS_Name2IPAddressAsync(const char *name, DNS_NameResolveHandler handler, void *
 #ifndef FEAT_CMDMON
 
 void
-CAM_Initialise(int family)
+CAM_Initialise(void)
 {
 }
 
@@ -142,7 +147,7 @@ MNL_Finalise(void)
 #ifndef FEAT_NTP
 
 void
-NCR_AddBroadcastDestination(IPAddr *addr, unsigned short port, int interval)
+NCR_AddBroadcastDestination(NTP_Remote_Address *addr, int interval)
 {
 }
 
@@ -169,7 +174,7 @@ NCR_CheckAccessRestriction(IPAddr *ip_addr)
 }
 
 void
-NIO_Initialise(int family)
+NIO_Initialise(void)
 {
 }
 
@@ -189,20 +194,28 @@ NSR_Finalise(void)
 }
 
 NSR_Status
-NSR_AddSource(NTP_Remote_Address *remote_addr, NTP_Source_Type type, SourceParameters *params)
+NSR_AddSource(NTP_Remote_Address *remote_addr, NTP_Source_Type type,
+              SourceParameters *params, uint32_t *conf_id)
 {
   return NSR_TooManySources;
 }
 
-void
-NSR_AddSourceByName(char *name, int port, int pool, NTP_Source_Type type, SourceParameters *params)
+NSR_Status
+NSR_AddSourceByName(char *name, int port, int pool, NTP_Source_Type type,
+                    SourceParameters *params, uint32_t *conf_id)
 {
+  return NSR_TooManySources;
 }
 
 NSR_Status
-NSR_RemoveSource(NTP_Remote_Address *remote_addr)
+NSR_RemoveSource(IPAddr *address)
 {
   return NSR_NoSuchSource;
+}
+
+void
+NSR_RemoveSourcesById(uint32_t conf_id)
+{
 }
 
 void
@@ -218,6 +231,12 @@ NSR_HandleBadSource(IPAddr *address)
 void
 NSR_RefreshAddresses(void)
 {
+}
+
+char *
+NSR_GetName(IPAddr *address)
+{
+  return NULL;
 }
 
 void
@@ -308,6 +327,12 @@ NSR_ReportSource(RPT_SourceReport *report, struct timespec *now)
 }
   
 int
+NSR_GetAuthReport(IPAddr *address, RPT_AuthReport *report)
+{
+  return 0;
+}
+
+int
 NSR_GetNTPReport(RPT_NTPReport *report)
 {
   return 0;
@@ -317,6 +342,11 @@ void
 NSR_GetActivityReport(RPT_ActivityReport *report)
 {
   memset(report, 0, sizeof (*report));
+}
+
+void
+NSR_DumpAuthData(void)
+{
 }
 
 #ifndef FEAT_CMDMON
@@ -398,15 +428,140 @@ NSD_Finalise(void)
 }
 
 int
-NSD_GetAuthDelay(uint32_t key_id)
-{
-  return 0;
-}
-
-int
-NSD_SignAndSendPacket(uint32_t key_id, NTP_Packet *packet, NTP_Remote_Address *remote_addr, NTP_Local_Address *local_addr, int length)
+NSD_SignAndSendPacket(uint32_t key_id, NTP_Packet *packet, NTP_PacketInfo *info,
+                      NTP_Remote_Address *remote_addr, NTP_Local_Address *local_addr)
 {
   return 0;
 }
 
 #endif /* !FEAT_SIGND */
+
+#ifndef HAVE_CMAC
+
+int
+CMC_GetKeyLength(CMC_Algorithm algorithm)
+{
+  return 0;
+}
+
+CMC_Instance
+CMC_CreateInstance(CMC_Algorithm algorithm, const unsigned char *key, int length)
+{
+  return NULL;
+}
+
+int
+CMC_Hash(CMC_Instance inst, const void *in, int in_len, unsigned char *out, int out_len)
+{
+  return 0;
+}
+
+void
+CMC_DestroyInstance(CMC_Instance inst)
+{
+}
+
+#endif /* !HAVE_CMAC */
+
+#ifndef FEAT_NTS
+
+void
+NNS_Initialise(void)
+{
+}
+
+void
+NNS_Finalise(void)
+{
+}
+
+int
+NNS_CheckRequestAuth(NTP_Packet *packet, NTP_PacketInfo *info, uint32_t *kod)
+{
+  *kod = 0;
+  return 0;
+}
+
+int
+NNS_GenerateResponseAuth(NTP_Packet *request, NTP_PacketInfo *req_info,
+                         NTP_Packet *response, NTP_PacketInfo *res_info,
+                         uint32_t kod)
+{
+  return 0;
+}
+
+NNC_Instance
+NNC_CreateInstance(IPSockAddr *nts_address, const char *name, uint32_t cert_set,
+                   uint16_t ntp_port)
+{
+  return NULL;
+}
+
+void
+NNC_DestroyInstance(NNC_Instance inst)
+{
+}
+
+int
+NNC_PrepareForAuth(NNC_Instance inst)
+{
+  return 1;
+}
+
+int
+NNC_GenerateRequestAuth(NNC_Instance inst, NTP_Packet *packet, NTP_PacketInfo *info)
+{
+  static int logged = 0;
+
+  LOG(logged ? LOGS_DEBUG : LOGS_WARN, "Missing NTS support");
+  logged = 1;
+  return 0;
+}
+
+int
+NNC_CheckResponseAuth(NNC_Instance inst, NTP_Packet *packet, NTP_PacketInfo *info)
+{
+  return 0;
+}
+
+void
+NNC_ChangeAddress(NNC_Instance inst, IPAddr *address)
+{
+}
+
+void
+NNC_DumpData(NNC_Instance inst)
+{
+}
+
+void
+NNC_GetReport(NNC_Instance inst, RPT_AuthReport *report)
+{
+}
+
+void
+NKS_PreInitialise(uid_t uid, gid_t gid, int scfilter_level)
+{
+}
+
+void
+NKS_Initialise(void)
+{
+}
+
+void
+NKS_Finalise(void)
+{
+}
+
+void
+NKS_DumpKeys(void)
+{
+}
+
+void
+NKS_ReloadKeys(void)
+{
+}
+
+#endif /* !FEAT_NTS */

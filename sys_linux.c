@@ -426,7 +426,7 @@ SYS_Linux_Finalise(void)
 
 #ifdef FEAT_PRIVDROP
 void
-SYS_Linux_DropRoot(uid_t uid, gid_t gid, int clock_control)
+SYS_Linux_DropRoot(uid_t uid, gid_t gid, SYS_ProcessContext context, int clock_control)
 {
   char cap_text[256];
   cap_t cap;
@@ -437,12 +437,22 @@ SYS_Linux_DropRoot(uid_t uid, gid_t gid, int clock_control)
   
   UTI_DropRoot(uid, gid);
 
-  /* Keep CAP_NET_BIND_SERVICE only if a server NTP port can be opened
-     and keep CAP_SYS_TIME only if the clock control is enabled */
-  if (snprintf(cap_text, sizeof (cap_text), "%s %s",
-               CNF_GetNTPPort() ? "cap_net_bind_service=ep" : "",
+  /* Keep CAP_NET_BIND_SERVICE if the NTP server sockets may need to be bound
+     to a privileged port.
+     Keep CAP_NET_RAW if an NTP socket may need to be bound to a device on
+     kernels before 5.7.
+     Keep CAP_SYS_TIME if the clock control is enabled. */
+  if (snprintf(cap_text, sizeof (cap_text), "%s %s %s",
+               (CNF_GetNTPPort() > 0 && CNF_GetNTPPort() < 1024) ?
+                 "cap_net_bind_service=ep" : "",
+               (CNF_GetBindNtpInterface() || CNF_GetBindAcquisitionInterface()) &&
+                 !SYS_Linux_CheckKernelVersion(5, 7) ? "cap_net_raw=ep" : "",
                clock_control ? "cap_sys_time=ep" : "") >= sizeof (cap_text))
     assert(0);
+
+  /* Helpers don't need any capabilities */
+  if (context != SYS_MAIN_PROCESS)
+    cap_text[0] = '\0';
 
   if ((cap = cap_from_text(cap_text)) == NULL) {
     LOG_FATAL("cap_from_text() failed");
@@ -474,39 +484,150 @@ void check_seccomp_applicability(void)
 /* ================================================== */
 
 void
-SYS_Linux_EnableSystemCallFilter(int level)
+SYS_Linux_EnableSystemCallFilter(int level, SYS_ProcessContext context)
 {
-  const int syscalls[] = {
+  const int allowed[] = {
     /* Clock */
-    SCMP_SYS(adjtimex), SCMP_SYS(clock_gettime), SCMP_SYS(gettimeofday),
-    SCMP_SYS(settimeofday), SCMP_SYS(time),
+    SCMP_SYS(adjtimex),
+    SCMP_SYS(clock_adjtime),
+#ifdef __NR_clock_adjtime64
+    SCMP_SYS(clock_adjtime64),
+#endif
+    SCMP_SYS(clock_gettime),
+#ifdef __NR_clock_gettime64
+    SCMP_SYS(clock_gettime64),
+#endif
+    SCMP_SYS(gettimeofday),
+    SCMP_SYS(settimeofday),
+    SCMP_SYS(time),
+
     /* Process */
-    SCMP_SYS(clone), SCMP_SYS(exit), SCMP_SYS(exit_group), SCMP_SYS(getpid),
-    SCMP_SYS(getrlimit), SCMP_SYS(rt_sigaction), SCMP_SYS(rt_sigreturn),
-    SCMP_SYS(rt_sigprocmask), SCMP_SYS(set_tid_address), SCMP_SYS(sigreturn),
-    SCMP_SYS(wait4), SCMP_SYS(waitpid),
+    SCMP_SYS(clone),
+    SCMP_SYS(exit),
+    SCMP_SYS(exit_group),
+    SCMP_SYS(getpid),
+    SCMP_SYS(getrlimit),
+    SCMP_SYS(getuid),
+    SCMP_SYS(getuid32),
+    SCMP_SYS(rt_sigaction),
+    SCMP_SYS(rt_sigreturn),
+    SCMP_SYS(rt_sigprocmask),
+    SCMP_SYS(set_tid_address),
+    SCMP_SYS(sigreturn),
+    SCMP_SYS(wait4),
+    SCMP_SYS(waitpid),
+
     /* Memory */
-    SCMP_SYS(brk), SCMP_SYS(madvise), SCMP_SYS(mmap), SCMP_SYS(mmap2),
-    SCMP_SYS(mprotect), SCMP_SYS(mremap), SCMP_SYS(munmap), SCMP_SYS(shmdt),
+    SCMP_SYS(brk),
+    SCMP_SYS(madvise),
+    SCMP_SYS(mmap),
+    SCMP_SYS(mmap2),
+    SCMP_SYS(mprotect),
+    SCMP_SYS(mremap),
+    SCMP_SYS(munmap),
+    SCMP_SYS(shmdt),
+
     /* Filesystem */
-    SCMP_SYS(_llseek), SCMP_SYS(access), SCMP_SYS(chmod), SCMP_SYS(chown),
-    SCMP_SYS(chown32), SCMP_SYS(faccessat), SCMP_SYS(fchmodat), SCMP_SYS(fchownat),
-    SCMP_SYS(fstat), SCMP_SYS(fstat64), SCMP_SYS(getdents), SCMP_SYS(getdents64),
-    SCMP_SYS(lseek), SCMP_SYS(newfstatat), SCMP_SYS(rename), SCMP_SYS(renameat),
-    SCMP_SYS(stat), SCMP_SYS(stat64), SCMP_SYS(statfs), SCMP_SYS(statfs64),
-    SCMP_SYS(unlink), SCMP_SYS(unlinkat),
+    SCMP_SYS(_llseek),
+    SCMP_SYS(access),
+    SCMP_SYS(chmod),
+    SCMP_SYS(chown),
+    SCMP_SYS(chown32),
+    SCMP_SYS(faccessat),
+    SCMP_SYS(fchmodat),
+    SCMP_SYS(fchownat),
+    SCMP_SYS(fstat),
+    SCMP_SYS(fstat64),
+    SCMP_SYS(fstatat64),
+    SCMP_SYS(getdents),
+    SCMP_SYS(getdents64),
+    SCMP_SYS(lseek),
+    SCMP_SYS(lstat),
+    SCMP_SYS(lstat64),
+    SCMP_SYS(newfstatat),
+    SCMP_SYS(readlink),
+    SCMP_SYS(readlinkat),
+    SCMP_SYS(rename),
+    SCMP_SYS(renameat),
+#ifdef __NR_renameat2
+    SCMP_SYS(renameat2),
+#endif
+    SCMP_SYS(stat),
+    SCMP_SYS(stat64),
+    SCMP_SYS(statfs),
+    SCMP_SYS(statfs64),
+#ifdef __NR_statx
+    SCMP_SYS(statx),
+#endif
+    SCMP_SYS(unlink),
+    SCMP_SYS(unlinkat),
+
     /* Socket */
-    SCMP_SYS(bind), SCMP_SYS(connect), SCMP_SYS(getsockname), SCMP_SYS(getsockopt),
-    SCMP_SYS(recv), SCMP_SYS(recvfrom), SCMP_SYS(recvmmsg), SCMP_SYS(recvmsg),
-    SCMP_SYS(send), SCMP_SYS(sendmmsg), SCMP_SYS(sendmsg), SCMP_SYS(sendto),
+    SCMP_SYS(accept),
+    SCMP_SYS(bind),
+    SCMP_SYS(connect),
+    SCMP_SYS(getsockname),
+    SCMP_SYS(getsockopt),
+    SCMP_SYS(recv),
+    SCMP_SYS(recvfrom),
+    SCMP_SYS(recvmmsg),
+#ifdef __NR_recvmmsg_time64
+    SCMP_SYS(recvmmsg_time64),
+#endif
+    SCMP_SYS(recvmsg),
+    SCMP_SYS(send),
+    SCMP_SYS(sendmmsg),
+    SCMP_SYS(sendmsg),
+    SCMP_SYS(sendto),
+    SCMP_SYS(shutdown),
     /* TODO: check socketcall arguments */
     SCMP_SYS(socketcall),
+
     /* General I/O */
-    SCMP_SYS(_newselect), SCMP_SYS(close), SCMP_SYS(open), SCMP_SYS(openat), SCMP_SYS(pipe),
-    SCMP_SYS(pipe2), SCMP_SYS(poll), SCMP_SYS(ppoll), SCMP_SYS(pselect6), SCMP_SYS(read),
-    SCMP_SYS(futex), SCMP_SYS(select), SCMP_SYS(set_robust_list), SCMP_SYS(write),
+    SCMP_SYS(_newselect),
+    SCMP_SYS(close),
+    SCMP_SYS(open),
+    SCMP_SYS(openat),
+    SCMP_SYS(pipe),
+    SCMP_SYS(pipe2),
+    SCMP_SYS(poll),
+    SCMP_SYS(ppoll),
+#ifdef __NR_ppoll_time64
+    SCMP_SYS(ppoll_time64),
+#endif
+    SCMP_SYS(pselect6),
+#ifdef __NR_pselect6_time64
+    SCMP_SYS(pselect6_time64),
+#endif
+    SCMP_SYS(read),
+    SCMP_SYS(futex),
+#ifdef __NR_futex_time64
+    SCMP_SYS(futex_time64),
+#endif
+    SCMP_SYS(select),
+    SCMP_SYS(set_robust_list),
+    SCMP_SYS(write),
+
     /* Miscellaneous */
-    SCMP_SYS(getrandom), SCMP_SYS(sysinfo), SCMP_SYS(uname),
+    SCMP_SYS(getrandom),
+    SCMP_SYS(sysinfo),
+    SCMP_SYS(uname),
+  };
+
+  const int denied_any[] = {
+    SCMP_SYS(execve),
+#ifdef __NR_execveat
+    SCMP_SYS(execveat),
+#endif
+    SCMP_SYS(fork),
+    SCMP_SYS(ptrace),
+    SCMP_SYS(vfork),
+  };
+
+  const int denied_ntske[] = {
+    SCMP_SYS(ioctl),
+    SCMP_SYS(setsockopt),
+    SCMP_SYS(socket),
   };
 
   const int socket_domains[] = {
@@ -517,18 +638,24 @@ SYS_Linux_EnableSystemCallFilter(int level)
   };
 
   const static int socket_options[][2] = {
-    { SOL_IP, IP_PKTINFO }, { SOL_IP, IP_FREEBIND },
+    { SOL_IP, IP_PKTINFO }, { SOL_IP, IP_FREEBIND }, { SOL_IP, IP_TOS },
 #ifdef FEAT_IPV6
     { SOL_IPV6, IPV6_V6ONLY }, { SOL_IPV6, IPV6_RECVPKTINFO },
 #endif
+#ifdef SO_BINDTODEVICE
+    { SOL_SOCKET, SO_BINDTODEVICE },
+#endif
     { SOL_SOCKET, SO_BROADCAST }, { SOL_SOCKET, SO_REUSEADDR },
+#ifdef SO_REUSEPORT
+    { SOL_SOCKET, SO_REUSEPORT },
+#endif
     { SOL_SOCKET, SO_TIMESTAMP }, { SOL_SOCKET, SO_TIMESTAMPNS },
 #ifdef HAVE_LINUX_TIMESTAMPING
     { SOL_SOCKET, SO_SELECT_ERR_QUEUE }, { SOL_SOCKET, SO_TIMESTAMPING },
 #endif
   };
 
-  const static int fcntls[] = { F_GETFD, F_SETFD, F_SETFL };
+  const static int fcntls[] = { F_GETFD, F_SETFD, F_GETFL, F_SETFL };
 
   const static unsigned long ioctls[] = {
     FIONREAD, TCGETS,
@@ -555,64 +682,103 @@ SYS_Linux_EnableSystemCallFilter(int level)
 #endif
   };
 
+  unsigned int default_action, deny_action;
   scmp_filter_ctx *ctx;
   int i;
 
-  /* Check if the chronyd configuration is supported */
-  check_seccomp_applicability();
+  /* Sign of the level determines the deny action (kill or SIGSYS).
+     At level 1, selected syscalls are allowed, others are denied.
+     At level 2, selected syscalls are denied, others are allowed. */
 
-  /* Start the helper process, which will run without any seccomp filter.  It
-     will be used for getaddrinfo(), for which it's difficult to maintain a
-     list of required system calls (with glibc it depends on what NSS modules
-     are installed and enabled on the system). */
-  PRV_StartHelper();
+  deny_action = level > 0 ? SCMP_ACT_KILL : SCMP_ACT_TRAP;
+  if (level < 0)
+    level = -level;
 
-  ctx = seccomp_init(level > 0 ? SCMP_ACT_KILL : SCMP_ACT_TRAP);
+  switch (level) {
+    case 1:
+      default_action = deny_action;
+      break;
+    case 2:
+      default_action = SCMP_ACT_ALLOW;
+      break;
+    default:
+      LOG_FATAL("Unsupported filter level");
+  }
+
+  if (context == SYS_MAIN_PROCESS) {
+    /* Check if the chronyd configuration is supported */
+    check_seccomp_applicability();
+
+    /* At level 1, start a helper process which will not have a seccomp filter.
+       It will be used for getaddrinfo(), for which it is difficult to maintain
+       a list of required system calls (with glibc it depends on what NSS
+       modules are installed and enabled on the system). */
+    if (default_action != SCMP_ACT_ALLOW)
+      PRV_StartHelper();
+  }
+
+  ctx = seccomp_init(default_action);
   if (ctx == NULL)
       LOG_FATAL("Failed to initialize seccomp");
 
-  /* Add system calls that are always allowed */
-  for (i = 0; i < (sizeof (syscalls) / sizeof (*syscalls)); i++) {
-    if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, syscalls[i], 0) < 0)
-      goto add_failed;
+  if (default_action != SCMP_ACT_ALLOW) {
+    for (i = 0; i < sizeof (allowed) / sizeof (*allowed); i++) {
+      if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, allowed[i], 0) < 0)
+        goto add_failed;
+    }
+  } else {
+    for (i = 0; i < sizeof (denied_any) / sizeof (*denied_any); i++) {
+      if (seccomp_rule_add(ctx, deny_action, denied_any[i], 0) < 0)
+        goto add_failed;
+    }
+
+    if (context == SYS_NTSKE_HELPER) {
+      for (i = 0; i < sizeof (denied_ntske) / sizeof (*denied_ntske); i++) {
+        if (seccomp_rule_add(ctx, deny_action, denied_ntske[i], 0) < 0)
+          goto add_failed;
+      }
+    }
   }
 
-  /* Allow sockets to be created only in selected domains */
-  for (i = 0; i < sizeof (socket_domains) / sizeof (*socket_domains); i++) {
-    if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket), 1,
-                         SCMP_A0(SCMP_CMP_EQ, socket_domains[i])) < 0)
-      goto add_failed;
-  }
+  if (default_action != SCMP_ACT_ALLOW && context == SYS_MAIN_PROCESS) {
+    /* Allow opening sockets in selected domains */
+    for (i = 0; i < sizeof (socket_domains) / sizeof (*socket_domains); i++) {
+      if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket), 1,
+                           SCMP_A0(SCMP_CMP_EQ, socket_domains[i])) < 0)
+        goto add_failed;
+    }
 
-  /* Allow setting only selected sockets options */
-  for (i = 0; i < sizeof (socket_options) / sizeof (*socket_options); i++) {
-    if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(setsockopt), 3,
-                         SCMP_A1(SCMP_CMP_EQ, socket_options[i][0]),
-                         SCMP_A2(SCMP_CMP_EQ, socket_options[i][1]),
-                         SCMP_A4(SCMP_CMP_LE, sizeof (int))) < 0)
-      goto add_failed;
-  }
+    /* Allow selected socket options */
+    for (i = 0; i < sizeof (socket_options) / sizeof (*socket_options); i++) {
+      if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(setsockopt), 3,
+                           SCMP_A1(SCMP_CMP_EQ, socket_options[i][0]),
+                           SCMP_A2(SCMP_CMP_EQ, socket_options[i][1]),
+                           SCMP_A4(SCMP_CMP_LE, sizeof (int))) < 0)
+        goto add_failed;
+    }
 
-  /* Allow only selected fcntl calls */
-  for (i = 0; i < sizeof (fcntls) / sizeof (*fcntls); i++) {
-    if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(fcntl), 1,
-                         SCMP_A1(SCMP_CMP_EQ, fcntls[i])) < 0 ||
-        seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(fcntl64), 1,
-                         SCMP_A1(SCMP_CMP_EQ, fcntls[i])) < 0)
-      goto add_failed;
-  }
+    /* Allow selected fcntl calls */
+    for (i = 0; i < sizeof (fcntls) / sizeof (*fcntls); i++) {
+      if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(fcntl), 1,
+                           SCMP_A1(SCMP_CMP_EQ, fcntls[i])) < 0 ||
+          seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(fcntl64), 1,
+                           SCMP_A1(SCMP_CMP_EQ, fcntls[i])) < 0)
+        goto add_failed;
+    }
 
-  /* Allow only selected ioctls */
-  for (i = 0; i < sizeof (ioctls) / sizeof (*ioctls); i++) {
-    if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1,
-                         SCMP_A1(SCMP_CMP_EQ, ioctls[i])) < 0)
-      goto add_failed;
+    /* Allow selected ioctls */
+    for (i = 0; i < sizeof (ioctls) / sizeof (*ioctls); i++) {
+      if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1,
+                           SCMP_A1(SCMP_CMP_EQ, ioctls[i])) < 0)
+        goto add_failed;
+    }
   }
 
   if (seccomp_load(ctx) < 0)
     LOG_FATAL("Failed to load seccomp rules");
 
-  LOG(LOGS_INFO, "Loaded seccomp filter");
+  LOG(context == SYS_MAIN_PROCESS ? LOGS_INFO : LOGS_DEBUG,
+      "Loaded seccomp filter (level %d)", level);
   seccomp_release(ctx);
   return;
 

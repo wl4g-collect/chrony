@@ -108,8 +108,8 @@ static double max_clock_error;
 
 #define NSEC_PER_SEC 1000000000
 
-static void
-calculate_sys_precision(void)
+static double
+measure_clock_precision(void)
 {
   struct timespec ts, old_ts;
   int iters, diff, best;
@@ -135,18 +135,7 @@ calculate_sys_precision(void)
 
   assert(best > 0);
 
-  precision_quantum = 1.0e-9 * best;
-
-  /* Get rounded log2 value of the measured precision */
-  precision_log = 0;
-  while (best < 707106781) {
-    precision_log--;
-    best *= 2;
-  }
-
-  assert(precision_log >= -30);
-
-  DEBUG_LOG("Clock precision %.9f (%d)", precision_quantum, precision_log);
+  return 1.0e-9 * best;
 }
 
 /* ================================================== */
@@ -170,7 +159,16 @@ LCL_Initialise(void)
   current_freq_ppm = 0.0;
   temp_comp_ppm = 0.0;
 
-  calculate_sys_precision();
+  precision_quantum = CNF_GetClockPrecision();
+  if (precision_quantum <= 0.0)
+    precision_quantum = measure_clock_precision();
+
+  precision_quantum = CLAMP(1.0e-9, precision_quantum, 1.0);
+  precision_log = round(log(precision_quantum) / log(2.0));
+  /* NTP code doesn't support smaller log than -30 */
+  assert(precision_log >= -30);
+
+  DEBUG_LOG("Clock precision %.9f (%d)", precision_quantum, precision_log);
 
   /* This is the maximum allowed frequency offset in ppm, the time must
      never stop or run backwards */
@@ -185,13 +183,11 @@ LCL_Initialise(void)
 void
 LCL_Finalise(void)
 {
-  while (change_list.next != &change_list)
-    LCL_RemoveParameterChangeHandler(change_list.next->handler,
-                                     change_list.next->anything);
-
-  while (dispersion_notify_list.next != &dispersion_notify_list)
-    LCL_RemoveDispersionNotifyHandler(dispersion_notify_list.next->handler,
-                                      dispersion_notify_list.next->anything);
+  /* Make sure all handlers have been removed */
+  if (change_list.next != &change_list)
+    assert(0);
+  if (dispersion_notify_list.next != &dispersion_notify_list)
+    assert(0);
 }
 
 /* ================================================== */
@@ -509,7 +505,7 @@ LCL_AccumulateDeltaFrequency(double dfreq)
 
 /* ================================================== */
 
-void
+int
 LCL_AccumulateOffset(double offset, double corr_rate)
 {
   struct timespec raw, cooked;
@@ -521,12 +517,14 @@ LCL_AccumulateOffset(double offset, double corr_rate)
   LCL_CookTime(&raw, &cooked, NULL);
 
   if (!check_offset(&cooked, offset))
-      return;
+    return 0;
 
   (*drv_accrue_offset)(offset, corr_rate);
 
   /* Dispatch to all handlers */
   invoke_parameter_change_handlers(&raw, &cooked, 0.0, offset, LCL_ChangeAdjust);
+
+  return 1;
 }
 
 /* ================================================== */
@@ -590,7 +588,7 @@ LCL_NotifyLeap(int leap)
 
 /* ================================================== */
 
-void
+int
 LCL_AccumulateFrequencyAndOffset(double dfreq, double doffset, double corr_rate)
 {
   struct timespec raw, cooked;
@@ -602,7 +600,7 @@ LCL_AccumulateFrequencyAndOffset(double dfreq, double doffset, double corr_rate)
   LCL_CookTime(&raw, &cooked, NULL);
 
   if (!check_offset(&cooked, doffset))
-      return;
+    return 0;
 
   old_freq_ppm = current_freq_ppm;
 
@@ -624,6 +622,8 @@ LCL_AccumulateFrequencyAndOffset(double dfreq, double doffset, double corr_rate)
 
   /* Dispatch to all handlers */
   invoke_parameter_change_handlers(&raw, &cooked, dfreq, doffset, LCL_ChangeAdjust);
+
+  return 1;
 }
 
 /* ================================================== */
@@ -687,6 +687,19 @@ LCL_MakeStep(void)
   LOG(LOGS_WARN, "System clock was stepped by %.6f seconds", correction);
 
   return 1;
+}
+
+/* ================================================== */
+
+void
+LCL_CancelOffsetCorrection(void)
+{
+  struct timespec raw;
+  double correction;
+
+  LCL_ReadRawTime(&raw);
+  LCL_GetOffsetCorrection(&raw, &correction, NULL);
+  LCL_AccumulateOffset(correction, 0.0);
 }
 
 /* ================================================== */

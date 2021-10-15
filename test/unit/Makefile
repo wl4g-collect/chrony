@@ -4,7 +4,7 @@ CHRONY_SRCDIR = ../..
 CC = gcc
 CFLAGS = -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -pthread
 CPPFLAGS = -I$(CHRONY_SRCDIR) 
-LDFLAGS =  -pie -Wl,-z,relro,-z,now -lm 
+LDFLAGS =  -pie -Wl,-z,relro,-z,now  -lm  
 
 SHARED_OBJS = test.o
 
@@ -12,7 +12,8 @@ TEST_OBJS := $(sort $(patsubst %.c,%.o,$(wildcard *.c)))
 TESTS := $(patsubst %.o,%.test,$(filter-out $(SHARED_OBJS),$(TEST_OBJS)))
 
 CHRONYD_OBJS := $(patsubst %.o,$(CHRONY_SRCDIR)/%.o,$(filter-out main.o,\
-		  $(filter %.o,$(shell $(MAKE) -f $(CHRONY_SRCDIR)/Makefile print-chronyd-objects))))
+		  $(filter %.o,$(shell $(MAKE) -f $(CHRONY_SRCDIR)/Makefile \
+					print-chronyd-objects NODEPS=1))))
 
 all: $(TESTS)
 

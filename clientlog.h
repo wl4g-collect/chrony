@@ -31,20 +31,27 @@
 #include "sysincl.h"
 #include "reports.h"
 
+typedef enum {
+  CLG_NTP = 0,
+  CLG_NTSKE,
+  CLG_CMDMON,
+} CLG_Service;
+
 extern void CLG_Initialise(void);
 extern void CLG_Finalise(void);
 extern int CLG_GetClientIndex(IPAddr *client);
-extern int CLG_LogNTPAccess(IPAddr *client, struct timespec *now);
-extern int CLG_LogCommandAccess(IPAddr *client, struct timespec *now);
-extern int CLG_LimitNTPResponseRate(int index);
-extern int CLG_LimitCommandResponseRate(int index);
+extern int CLG_LogServiceAccess(CLG_Service service, IPAddr *client, struct timespec *now);
+extern int CLG_LimitServiceRate(CLG_Service service, int index);
+extern void CLG_LogAuthNtpRequest(void);
 extern void CLG_GetNtpTimestamps(int index, NTP_int64 **rx_ts, NTP_int64 **tx_ts);
 extern int CLG_GetNtpMinPoll(void);
 
 /* And some reporting functions, for use by chronyc. */
 
 extern int CLG_GetNumberOfIndices(void);
-extern int CLG_GetClientAccessReportByIndex(int index, RPT_ClientAccessByIndex_Report *report, struct timespec *now);
+extern int CLG_GetClientAccessReportByIndex(int index, int reset, uint32_t min_hits,
+                                            RPT_ClientAccessByIndex_Report *report,
+                                            struct timespec *now);
 extern void CLG_GetServerStatsReport(RPT_ServerStatsReport *report);
 
 #endif /* GOT_CLIENTLOG_H */

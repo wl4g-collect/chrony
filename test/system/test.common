@@ -20,6 +20,7 @@ TEST_DIR=${TEST_DIR:-$(pwd)/tmp}
 TEST_LIBDIR=${TEST_LIBDIR:-$TEST_DIR}
 TEST_LOGDIR=${TEST_LOGDIR:-$TEST_DIR}
 TEST_RUNDIR=${TEST_RUNDIR:-$TEST_DIR}
+TEST_SCFILTER=${TEST_SCFILTER:-0}
 
 test_start() {
 	check_chronyd_features NTP CMDMON || test_skip "NTP/CMDMON support disabled"
@@ -89,7 +90,13 @@ chronyc=$(command -v chronyc)
 [ -x "$chronyd" ] || test_skip "chronyd not found"
 [ -x "$chronyc" ] || test_skip "chronyc not found"
 
-netstat -aln > /dev/null 2> /dev/null || test_skip "missing netstat"
+if netstat -aln > /dev/null 2> /dev/null; then
+	port_list_command="netstat -aln"
+elif ss -atun > /dev/null 2> /dev/null; then
+	port_list_command="ss -atun"
+else
+	test_skip "missing netstat or ss"
+fi
 
 # Default test testings
 default_minimal_config=0
@@ -97,6 +104,8 @@ default_extra_chronyd_directives=""
 default_extra_chronyd_options=""
 default_clock_control=0
 default_server=127.0.0.1
+default_server_name=127.0.0.1
+default_server_options=""
 default_user=root
 
 # Initialize test settings from their defaults
@@ -178,7 +187,7 @@ get_free_port() {
 
 	while true; do
 		port=$((RANDOM % 10000 + 10000))
-		netstat -aln | grep '^udp.*:'$port && continue
+		$port_list_command | grep -q '^\(tcp\|udp\).*[:.]'"$port " && continue
 		break
 	done
 
@@ -210,7 +219,7 @@ generate_chrony_conf() {
 		echo "cmdallow"
 		echo "local"
 
-		echo "server $server port $ntpport minpoll -6 maxpoll -6"
+		echo "server $server_name port $ntpport minpoll -6 maxpoll -6 $server_options"
 
 		[ "$server" = "127.0.0.1" ] && echo "bindacqaddress $server"
 		echo "bindaddress 127.0.0.1"
@@ -220,6 +229,8 @@ generate_chrony_conf() {
 		echo "log tempcomp rawmeasurements refclocks statistics tracking rtc"
 		echo "logbanner 0"
 		echo "smoothtime 100.0 0.001"
+		echo "leapsectz right/UTC"
+		echo "dscp 46"
 
 		echo "include /dev/null"
 		echo "keyfile $TEST_DIR/keys"
@@ -234,6 +245,7 @@ get_chronyd_options() {
 	echo "-l $(get_logfile)"
 	echo "-f $(get_conffile)"
 	echo "-u $user"
+	echo "-F $TEST_SCFILTER"
 	echo "$extra_chronyd_options"
 }
 
@@ -248,14 +260,31 @@ start_chronyd() {
 
 	trap stop_chronyd EXIT
 
+	rm -f "$TEST_LOGDIR"/*.log
+
 	$CHRONYD_WRAPPER "$chronyd" $(get_chronyd_options) > "$TEST_DIR/chronyd.out" 2>&1
 
 	[ $? -eq 0 ] && [ -f "$pidfile" ] && ps -p "$(cat "$pidfile")" > /dev/null && test_ok || test_error
 }
 
 wait_for_sync() {
+	local prev_length
+
 	test_message 1 0 "waiting for synchronization"
-	sleep 1 && test_ok || test_error
+	prev_length=$msg_length
+
+	for i in $(seq 1 10); do
+		run_chronyc "ntpdata $server" > /dev/null 2>&1 || break
+		if check_chronyc_output "Total RX +: [1-9]" > /dev/null 2>&1; then
+			msg_length=$prev_length
+			test_ok
+			return
+		fi
+		sleep 1
+	done
+
+	msg_length=$prev_length
+	test_error
 }
 
 # Stop the chronyd instance
@@ -313,19 +342,24 @@ check_chronyd_message_count() {
 check_chronyd_files() {
 	test_message 1 0 "checking chronyd files"
 
-	grep -q " $server .* 111 111 1111 " "$TEST_LOGDIR/measurements.log" && \
-		grep -q " $server " "$TEST_LOGDIR/statistics.log" && \
-		grep -q " $server " "$TEST_LOGDIR/tracking.log" && \
+	grep -q " $server .* 111 111 1110 " "$TEST_LOGDIR/measurements.log" && \
 		[ -f "$TEST_LOGDIR/tempcomp.log" ] && [ "$(wc -l < "$TEST_LOGDIR/tempcomp.log")" -ge 2 ] && \
-		[ -f "$TEST_RUNDIR/$server.dat" ] && [ "$(wc -l < "$TEST_RUNDIR/$server.dat")" -ge 5 ] && \
 		test_ok || test_bad
 }
 
 # Run a chronyc command
 run_chronyc() {
-	test_message 1 0 "running chronyc $*"
+	local host=$chronyc_host options="-n -m"
 
-	$CHRONYC_WRAPPER "$chronyc" -h "$(get_cmdsocket)" -n -m "$@" > "$TEST_DIR/chronyc.out" && \
+	test_message 1 0 "running chronyc $([ -n "$host" ] && echo "@$host ")$*"
+
+	if [ -z "$host" ]; then
+		host="$(get_cmdsocket)"
+	else
+		options="$options -p $(grep cmdport "$(get_conffile)" | awk '{print $2}')"
+	fi
+
+	$CHRONYC_WRAPPER "$chronyc" -h "$host" $options "$@" > "$TEST_DIR/chronyc.out" && \
 		test_ok || test_error
 }
 

@@ -3,7 +3,7 @@
 
  **********************************************************************
  * Copyright (C) Richard P. Curnow  1997-2003
- * Copyright (C) Miroslav Lichvar  2009-2017
+ * Copyright (C) Miroslav Lichvar  2009-2017, 2020
  * 
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -33,14 +33,22 @@
 #include "conf.h"
 #include "ntp_sources.h"
 #include "ntp_core.h"
+#include "nts_ke.h"
 #include "refclock.h"
 #include "cmdmon.h"
+#include "socket.h"
 #include "srcparams.h"
 #include "logging.h"
 #include "nameserv.h"
 #include "memory.h"
 #include "cmdparse.h"
 #include "util.h"
+
+/* ================================================== */
+
+#define MAX_LINE_LENGTH 2048
+#define MAX_CONF_DIRS 10
+#define MAX_INCLUDE_LEVEL 10
 
 /* ================================================== */
 /* Forward prototypes */
@@ -51,11 +59,13 @@ static int parse_double(char *line, double *result);
 static int parse_null(char *line);
 
 static void parse_allow_deny(char *line, ARR_Instance restrictions, int allow);
+static void parse_authselectmode(char *);
 static void parse_bindacqaddress(char *);
 static void parse_bindaddress(char *);
 static void parse_bindcmdaddress(char *);
 static void parse_broadcast(char *);
 static void parse_clientloglimit(char *);
+static void parse_confdir(char *);
 static void parse_fallbackdrift(char *);
 static void parse_hwtimestamp(char *);
 static void parse_include(char *);
@@ -66,16 +76,20 @@ static void parse_log(char *);
 static void parse_mailonchange(char *);
 static void parse_makestep(char *);
 static void parse_maxchange(char *);
+static void parse_ntsserver(char *, ARR_Instance files);
+static void parse_ntstrustedcerts(char *);
 static void parse_ratelimit(char *line, int *enabled, int *interval,
                             int *burst, int *leak);
 static void parse_refclock(char *);
 static void parse_smoothtime(char *);
-static void parse_source(char *line, NTP_Source_Type type, int pool);
+static void parse_source(char *line, char *type, int fatal);
+static void parse_sourcedir(char *);
 static void parse_tempcomp(char *);
 
 /* ================================================== */
 /* Configuration variables */
 
+static int print_config = 0;
 static int restarted = 0;
 static char *rtc_device;
 static int acquisition_port = -1;
@@ -88,7 +102,9 @@ static double correction_time_ratio = 3.0;
 static double max_clock_error = 1.0; /* in ppm */
 static double max_drift = 500000.0; /* in ppm */
 static double max_slew_rate = 1e6 / 12.0; /* in ppm */
+static double clock_precision = 0.0; /* in seconds */
 
+static SRC_AuthSelectMode authselect_mode = SRC_AUTHSELECT_MIX;
 static double max_distance = 3.0;
 static double max_jitter = 1.0;
 static double reselect_distance = 1e-4;
@@ -105,8 +121,8 @@ static int do_log_rtc = 0;
 static int do_log_refclocks = 0;
 static int do_log_tempcomp = 0;
 static int log_banner = 32;
-static char *logdir;
-static char *dumpdir;
+static char *logdir = NULL;
+static char *dumpdir = NULL;
 
 static int enable_local=0;
 static int local_stratum;
@@ -180,21 +196,33 @@ static IPAddr bind_acq_address4, bind_acq_address6;
    the loopback address will be used */
 static IPAddr bind_cmd_address4, bind_cmd_address6;
 
+/* Interface names to bind the NTP server, NTP client, and command socket */
+static char *bind_ntp_iface = NULL;
+static char *bind_acq_iface = NULL;
+static char *bind_cmd_iface = NULL;
+
 /* Path to the Unix domain command socket. */
-static char *bind_cmd_path;
+static char *bind_cmd_path = NULL;
+
+/* Differentiated Services Code Point (DSCP) in transmitted NTP packets */
+static int ntp_dscp = 0;
 
 /* Path to Samba (ntp_signd) socket. */
 static char *ntp_signd_socket = NULL;
 
 /* Filename to use for storing pid of running chronyd, to prevent multiple
  * chronyds being started. */
-static char *pidfile;
+static char *pidfile = NULL;
 
 /* Rate limiting parameters */
 static int ntp_ratelimit_enabled = 0;
 static int ntp_ratelimit_interval = 3;
 static int ntp_ratelimit_burst = 8;
 static int ntp_ratelimit_leak = 2;
+static int nts_ratelimit_enabled = 0;
+static int nts_ratelimit_interval = 6;
+static int nts_ratelimit_burst = 8;
+static int nts_ratelimit_leak = 2;
 static int cmd_ratelimit_enabled = 0;
 static int cmd_ratelimit_interval = -4;
 static int cmd_ratelimit_burst = 8;
@@ -223,6 +251,25 @@ static char *leapsec_tz = NULL;
 /* Name of the user to which will be dropped root privileges. */
 static char *user;
 
+/* NTS server and client configuration */
+static char *nts_dump_dir = NULL;
+static char *nts_ntp_server = NULL;
+static ARR_Instance nts_server_cert_files; /* array of (char *) */
+static ARR_Instance nts_server_key_files; /* array of (char *) */
+static int nts_server_port = NKE_PORT;
+static int nts_server_processes = 1;
+static int nts_server_connections = 100;
+static int nts_refresh = 2419200; /* 4 weeks */
+static int nts_rotate = 604800; /* 1 week */
+static ARR_Instance nts_trusted_certs_paths; /* array of (char *) */
+static ARR_Instance nts_trusted_certs_ids; /* array of uint32_t */
+
+/* Number of clock updates needed to enable certificate time checks */
+static int no_cert_time_check = 0;
+
+/* Flag disabling use of system trusted certificates */
+static int no_system_cert = 0;
+
 /* Array of CNF_HwTsInterface */
 static ARR_Instance hwts_interfaces;
 
@@ -234,6 +281,10 @@ typedef struct {
 
 /* Array of NTP_Source */
 static ARR_Instance ntp_sources;
+/* Array of (char *) */
+static ARR_Instance ntp_source_dirs;
+/* Array of uint32_t corresponding to ntp_sources (for sourcedirs reload) */
+static ARR_Instance ntp_source_ids;
 
 /* Array of RefclockParameters */
 static ARR_Instance refclock_sources;
@@ -250,8 +301,7 @@ static ARR_Instance ntp_restrictions;
 static ARR_Instance cmd_restrictions;
 
 typedef struct {
-  IPAddr addr;
-  unsigned short port;
+  NTP_Remote_Address addr;
   int interval;
 } NTP_Broadcast_Destination;
 
@@ -264,6 +314,8 @@ static ARR_Instance broadcasts;
 static int line_number;
 static const char *processed_file;
 static const char *processed_command;
+
+static int include_level = 0;
 
 /* ================================================== */
 
@@ -331,26 +383,36 @@ CNF_Initialise(int r, int client_only)
 
   init_sources = ARR_CreateInstance(sizeof (IPAddr));
   ntp_sources = ARR_CreateInstance(sizeof (NTP_Source));
+  ntp_source_dirs = ARR_CreateInstance(sizeof (char *));
+  ntp_source_ids = ARR_CreateInstance(sizeof (uint32_t));
   refclock_sources = ARR_CreateInstance(sizeof (RefclockParameters));
   broadcasts = ARR_CreateInstance(sizeof (NTP_Broadcast_Destination));
 
   ntp_restrictions = ARR_CreateInstance(sizeof (AllowDeny));
   cmd_restrictions = ARR_CreateInstance(sizeof (AllowDeny));
 
-  dumpdir = Strdup("");
-  logdir = Strdup("");
+  nts_server_cert_files = ARR_CreateInstance(sizeof (char *));
+  nts_server_key_files = ARR_CreateInstance(sizeof (char *));
+  nts_trusted_certs_paths = ARR_CreateInstance(sizeof (char *));
+  nts_trusted_certs_ids = ARR_CreateInstance(sizeof (uint32_t));
+
   rtc_device = Strdup(DEFAULT_RTC_DEVICE);
   hwclock_file = Strdup(DEFAULT_HWCLOCK_FILE);
   user = Strdup(DEFAULT_USER);
 
   if (client_only) {
     cmd_port = ntp_port = 0;
-    bind_cmd_path = Strdup("");
-    pidfile = Strdup("");
   } else {
     bind_cmd_path = Strdup(DEFAULT_COMMAND_SOCKET);
     pidfile = Strdup(DEFAULT_PID_FILE);
   }
+
+  SCK_GetAnyLocalIPAddress(IPADDR_INET4, &bind_address4);
+  SCK_GetAnyLocalIPAddress(IPADDR_INET6, &bind_address6);
+  SCK_GetAnyLocalIPAddress(IPADDR_INET4, &bind_acq_address4);
+  SCK_GetAnyLocalIPAddress(IPADDR_INET6, &bind_acq_address6);
+  SCK_GetLoopbackIPAddress(IPADDR_INET4, &bind_cmd_address4);
+  SCK_GetLoopbackIPAddress(IPADDR_INET6, &bind_cmd_address6);
 }
 
 /* ================================================== */
@@ -366,14 +428,33 @@ CNF_Finalise(void)
 
   for (i = 0; i < ARR_GetSize(ntp_sources); i++)
     Free(((NTP_Source *)ARR_GetElement(ntp_sources, i))->params.name);
+  for (i = 0; i < ARR_GetSize(ntp_source_dirs); i++)
+    Free(*(char **)ARR_GetElement(ntp_source_dirs, i));
+  for (i = 0; i < ARR_GetSize(refclock_sources); i++) {
+    Free(((RefclockParameters *)ARR_GetElement(refclock_sources, i))->driver_name);
+    Free(((RefclockParameters *)ARR_GetElement(refclock_sources, i))->driver_parameter);
+  }
+  for (i = 0; i < ARR_GetSize(nts_server_cert_files); i++)
+    Free(*(char **)ARR_GetElement(nts_server_cert_files, i));
+  for (i = 0; i < ARR_GetSize(nts_server_key_files); i++)
+    Free(*(char **)ARR_GetElement(nts_server_key_files, i));
+  for (i = 0; i < ARR_GetSize(nts_trusted_certs_paths); i++)
+    Free(*(char **)ARR_GetElement(nts_trusted_certs_paths, i));
 
   ARR_DestroyInstance(init_sources);
   ARR_DestroyInstance(ntp_sources);
+  ARR_DestroyInstance(ntp_source_dirs);
+  ARR_DestroyInstance(ntp_source_ids);
   ARR_DestroyInstance(refclock_sources);
   ARR_DestroyInstance(broadcasts);
 
   ARR_DestroyInstance(ntp_restrictions);
   ARR_DestroyInstance(cmd_restrictions);
+
+  ARR_DestroyInstance(nts_server_cert_files);
+  ARR_DestroyInstance(nts_server_key_files);
+  ARR_DestroyInstance(nts_trusted_certs_paths);
+  ARR_DestroyInstance(nts_trusted_certs_ids);
 
   Free(drift_file);
   Free(dumpdir);
@@ -381,6 +462,9 @@ CNF_Finalise(void)
   Free(keys_file);
   Free(leapsec_tz);
   Free(logdir);
+  Free(bind_ntp_iface);
+  Free(bind_acq_iface);
+  Free(bind_cmd_iface);
   Free(bind_cmd_path);
   Free(ntp_signd_socket);
   Free(pidfile);
@@ -390,6 +474,16 @@ CNF_Finalise(void)
   Free(mail_user_on_change);
   Free(tempcomp_sensor_file);
   Free(tempcomp_point_file);
+  Free(nts_dump_dir);
+  Free(nts_ntp_server);
+}
+
+/* ================================================== */
+
+void
+CNF_EnablePrint(void)
+{
+  print_config = 1;
 }
 
 /* ================================================== */
@@ -399,23 +493,22 @@ void
 CNF_ReadFile(const char *filename)
 {
   FILE *in;
-  char line[2048];
+  char line[MAX_LINE_LENGTH + 1];
   int i;
 
-  in = fopen(filename, "r");
-  if (!in) {
-    LOG_FATAL("Could not open configuration file %s : %s",
-              filename, strerror(errno));
-    return;
-  }
+  include_level++;
+  if (include_level > MAX_INCLUDE_LEVEL)
+    LOG_FATAL("Maximum include level reached");
 
-  DEBUG_LOG("Reading %s", filename);
+  in = UTI_OpenFile(NULL, filename, NULL, 'R', 0);
 
   for (i = 1; fgets(line, sizeof(line), in); i++) {
     CNF_ParseLine(filename, i, line);
   }
 
   fclose(in);
+
+  include_level--;
 }
 
 /* ================================================== */
@@ -430,31 +523,50 @@ CNF_ParseLine(const char *filename, int number, char *line)
   processed_file = filename;
   line_number = number;
 
+  /* Detect truncated line */
+  if (strlen(line) >= MAX_LINE_LENGTH)
+    other_parse_error("String too long");
+
   /* Remove extra white-space and comments */
   CPS_NormalizeLine(line);
 
   /* Skip blank lines */
-  if (!*line)
+  if (!*line) {
+    processed_file = NULL;
     return;
+  }
 
   /* We have a real line, now try to match commands */
   processed_command = command = line;
   p = CPS_SplitWord(line);
 
+  if (print_config && strcasecmp(command, "include") && strcasecmp(command, "confdir"))
+    printf("%s%s%s\n", command, p[0] != '\0' ? " " : "", p);
+
   if (!strcasecmp(command, "acquisitionport")) {
     parse_int(p, &acquisition_port);
   } else if (!strcasecmp(command, "allow")) {
     parse_allow_deny(p, ntp_restrictions, 1);
+  } else if (!strcasecmp(command, "authselectmode")) {
+    parse_authselectmode(p);
   } else if (!strcasecmp(command, "bindacqaddress")) {
     parse_bindacqaddress(p);
+  } else if (!strcasecmp(command, "bindacqdevice")) {
+    parse_string(p, &bind_acq_iface);
   } else if (!strcasecmp(command, "bindaddress")) {
     parse_bindaddress(p);
   } else if (!strcasecmp(command, "bindcmdaddress")) {
     parse_bindcmdaddress(p);
+  } else if (!strcasecmp(command, "bindcmddevice")) {
+    parse_string(p, &bind_cmd_iface);
+  } else if (!strcasecmp(command, "binddevice")) {
+    parse_string(p, &bind_ntp_iface);
   } else if (!strcasecmp(command, "broadcast")) {
     parse_broadcast(p);
   } else if (!strcasecmp(command, "clientloglimit")) {
     parse_clientloglimit(p);
+  } else if (!strcasecmp(command, "clockprecision")) {
+    parse_double(p, &clock_precision);
   } else if (!strcasecmp(command, "cmdallow")) {
     parse_allow_deny(p, cmd_restrictions, 1);
   } else if (!strcasecmp(command, "cmddeny")) {
@@ -466,12 +578,16 @@ CNF_ParseLine(const char *filename, int number, char *line)
                     &cmd_ratelimit_burst, &cmd_ratelimit_leak);
   } else if (!strcasecmp(command, "combinelimit")) {
     parse_double(p, &combine_limit);
+  } else if (!strcasecmp(command, "confdir")) {
+    parse_confdir(p);
   } else if (!strcasecmp(command, "corrtimeratio")) {
     parse_double(p, &correction_time_ratio);
   } else if (!strcasecmp(command, "deny")) {
     parse_allow_deny(p, ntp_restrictions, 0);
   } else if (!strcasecmp(command, "driftfile")) {
     parse_string(p, &drift_file);
+  } else if (!strcasecmp(command, "dscp")) {
+    parse_int(p, &ntp_dscp);
   } else if (!strcasecmp(command, "dumpdir")) {
     parse_string(p, &dumpdir);
   } else if (!strcasecmp(command, "dumponexit")) {
@@ -520,6 +636,8 @@ CNF_ParseLine(const char *filename, int number, char *line)
     parse_double(p, &max_drift);
   } else if (!strcasecmp(command, "maxjitter")) {
     parse_double(p, &max_jitter);
+  } else if (!strcasecmp(command, "maxntsconnections")) {
+    parse_int(p, &nts_server_connections);
   } else if (!strcasecmp(command, "maxsamples")) {
     parse_int(p, &max_samples);
   } else if (!strcasecmp(command, "maxslewrate")) {
@@ -530,16 +648,42 @@ CNF_ParseLine(const char *filename, int number, char *line)
     parse_int(p, &min_samples);
   } else if (!strcasecmp(command, "minsources")) {
     parse_int(p, &min_sources);
+  } else if (!strcasecmp(command, "nocerttimecheck")) {
+    parse_int(p, &no_cert_time_check);
   } else if (!strcasecmp(command, "noclientlog")) {
     no_client_log = parse_null(p);
+  } else if (!strcasecmp(command, "nosystemcert")) {
+    no_system_cert = parse_null(p);
   } else if (!strcasecmp(command, "ntpsigndsocket")) {
     parse_string(p, &ntp_signd_socket);
+  } else if (!strcasecmp(command, "ntsratelimit")) {
+    parse_ratelimit(p, &nts_ratelimit_enabled, &nts_ratelimit_interval,
+                    &nts_ratelimit_burst, &nts_ratelimit_leak);
+  } else if (!strcasecmp(command, "ntscachedir") ||
+             !strcasecmp(command, "ntsdumpdir")) {
+    parse_string(p, &nts_dump_dir);
+  } else if (!strcasecmp(command, "ntsntpserver")) {
+    parse_string(p, &nts_ntp_server);
+  } else if (!strcasecmp(command, "ntsport")) {
+    parse_int(p, &nts_server_port);
+  } else if (!strcasecmp(command, "ntsprocesses")) {
+    parse_int(p, &nts_server_processes);
+  } else if (!strcasecmp(command, "ntsrefresh")) {
+    parse_int(p, &nts_refresh);
+  } else if (!strcasecmp(command, "ntsrotate")) {
+    parse_int(p, &nts_rotate);
+  } else if (!strcasecmp(command, "ntsservercert")) {
+    parse_ntsserver(p, nts_server_cert_files);
+  } else if (!strcasecmp(command, "ntsserverkey")) {
+    parse_ntsserver(p, nts_server_key_files);
+  } else if (!strcasecmp(command, "ntstrustedcerts")) {
+    parse_ntstrustedcerts(p);
   } else if (!strcasecmp(command, "peer")) {
-    parse_source(p, NTP_PEER, 0);
+    parse_source(p, command, 1);
   } else if (!strcasecmp(command, "pidfile")) {
     parse_string(p, &pidfile);
   } else if (!strcasecmp(command, "pool")) {
-    parse_source(p, NTP_SERVER, 1);
+    parse_source(p, command, 1);
   } else if (!strcasecmp(command, "port")) {
     parse_int(p, &ntp_port);
   } else if (!strcasecmp(command, "ratelimit")) {
@@ -562,9 +706,11 @@ CNF_ParseLine(const char *filename, int number, char *line)
   } else if (!strcasecmp(command, "sched_priority")) {
     parse_int(p, &sched_priority);
   } else if (!strcasecmp(command, "server")) {
-    parse_source(p, NTP_SERVER, 0);
+    parse_source(p, command, 1);
   } else if (!strcasecmp(command, "smoothtime")) {
     parse_smoothtime(p);
+  } else if (!strcasecmp(command, "sourcedir")) {
+    parse_sourcedir(p);
   } else if (!strcasecmp(command, "stratumweight")) {
     parse_double(p, &stratum_weight);
   } else if (!strcasecmp(command, "tempcomp")) {
@@ -577,8 +723,10 @@ CNF_ParseLine(const char *filename, int number, char *line)
              !strcasecmp(command, "linux_hz")) {
     LOG(LOGS_WARN, "%s directive is no longer supported", command);
   } else {
-    other_parse_error("Invalid command");
+    other_parse_error("Invalid directive");
   }
+
+  processed_file = processed_command = NULL;
 }
 
 /* ================================================== */
@@ -630,20 +778,47 @@ parse_null(char *line)
 /* ================================================== */
 
 static void
-parse_source(char *line, NTP_Source_Type type, int pool)
+parse_source(char *line, char *type, int fatal)
 {
   NTP_Source source;
 
-  source.type = type;
-  source.pool = pool;
+  if (strcasecmp(type, "peer") == 0) {
+    source.type = NTP_PEER;
+    source.pool = 0;
+  } else if (strcasecmp(type, "pool") == 0) {
+    source.type = NTP_SERVER;
+    source.pool = 1;
+  } else if (strcasecmp(type, "server") == 0) {
+    source.type = NTP_SERVER;
+    source.pool = 0;
+  } else {
+    if (fatal)
+      command_parse_error();
+    return;
+  }
+
+  /* Avoid comparing uninitialized data in compare_sources() */
+  memset(&source.params, 0, sizeof (source.params));
 
   if (!CPS_ParseNTPSourceAdd(line, &source.params)) {
-    command_parse_error();
+    if (fatal)
+      command_parse_error();
     return;
   }
 
   source.params.name = Strdup(source.params.name);
   ARR_AppendElement(ntp_sources, &source);
+}
+
+/* ================================================== */
+
+static void
+parse_sourcedir(char *line)
+{
+  char *s;
+
+  s = Strdup(line);
+  ARR_AppendElement(ntp_source_dirs, &s);
 }
 
 /* ================================================== */
@@ -1000,6 +1175,41 @@ parse_mailonchange(char *line)
 /* ================================================== */
 
 static void
+parse_ntsserver(char *line, ARR_Instance files)
+{
+  char *file = NULL;
+
+  parse_string(line, &file);
+  ARR_AppendElement(files, &file);
+}
+
+/* ================================================== */
+
+static void
+parse_ntstrustedcerts(char *line)
+{
+  uint32_t id;
+  char *path;
+
+  if (get_number_of_args(line) == 2) {
+    path = CPS_SplitWord(line);
+    if (sscanf(line, "%"SCNu32, &id) != 1)
+      command_parse_error();
+  } else {
+    check_number_of_args(line, 1);
+    path = line;
+    id = 0;
+  }
+
+  path = Strdup(path);
+
+  ARR_AppendElement(nts_trusted_certs_paths, &path);
+  ARR_AppendElement(nts_trusted_certs_ids, &id);
+}
+
+/* ================================================== */
+
+static void
 parse_allow_deny(char *line, ARR_Instance restrictions, int allow)
 {
   char *p;
@@ -1101,6 +1311,23 @@ parse_allow_deny(char *line, ARR_Instance restrictions, int allow)
 /* ================================================== */
 
 static void
+parse_authselectmode(char *line)
+{
+  if (!strcasecmp(line, "require"))
+    authselect_mode = SRC_AUTHSELECT_REQUIRE;
+  else if (!strcasecmp(line, "prefer"))
+    authselect_mode = SRC_AUTHSELECT_PREFER;
+  else if (!strcasecmp(line, "mix"))
+    authselect_mode = SRC_AUTHSELECT_MIX;
+  else if (!strcasecmp(line, "ignore"))
+    authselect_mode = SRC_AUTHSELECT_IGNORE;
+  else
+    command_parse_error();
+}
+
+/* ================================================== */
+
+static void
 parse_bindacqaddress(char *line)
 {
   IPAddr ip;
@@ -1147,8 +1374,10 @@ parse_bindcmdaddress(char *line)
   if (line[0] == '/') {
     parse_string(line, &bind_cmd_path);
     /* / disables the socket */
-    if (!strcmp(bind_cmd_path, "/"))
-        bind_cmd_path[0] = '\0';
+    if (strcmp(bind_cmd_path, "/") == 0) {
+      Free(bind_cmd_path);
+      bind_cmd_path = NULL;
+    }
   } else if (UTI_StringToIP(line, &ip)) {
     if (ip.family == IPADDR_INET4)
       bind_cmd_address4 = ip;
@@ -1201,8 +1430,8 @@ parse_broadcast(char *line)
   }
 
   destination = (NTP_Broadcast_Destination *)ARR_GetNewElement(broadcasts);
-  destination->addr = ip;
-  destination->port = port;
+  destination->addr.ip_addr = ip;
+  destination->addr.port = port;
   destination->interval = interval;
 }
 
@@ -1345,6 +1574,86 @@ parse_hwtimestamp(char *line)
 
 /* ================================================== */
 
+static const char *
+get_basename(const char *path)
+{
+  const char *b = strrchr(path, '/');
+  return b ? b + 1 : path;
+}
+
+/* ================================================== */
+
+static int
+compare_basenames(const void *a, const void *b)
+{
+  return strcmp(get_basename(*(const char * const *)a),
+                get_basename(*(const char * const *)b));
+}
+
+/* ================================================== */
+
+static int
+search_dirs(char *line, const char *suffix, void (*file_handler)(const char *path))
+{
+  char *dirs[MAX_CONF_DIRS], buf[MAX_LINE_LENGTH], *path;
+  size_t i, j, k, locations, n_dirs;
+  glob_t gl;
+
+  n_dirs = UTI_SplitString(line, dirs, MAX_CONF_DIRS);
+  if (n_dirs < 1 || n_dirs > MAX_CONF_DIRS)
+    return 0;
+
+  /* Get the paths of all config files in the specified directories */
+  for (i = 0; i < n_dirs; i++) {
+    if (snprintf(buf, sizeof (buf), "%s/*%s", dirs[i], suffix) >= sizeof (buf))
+      assert(0);
+    if (glob(buf, GLOB_NOSORT | (i > 0 ? GLOB_APPEND : 0), NULL, &gl) != 0)
+      ;
+  }
+
+  if (gl.gl_pathc > 0) {
+    /* Sort the paths by filenames */
+    qsort(gl.gl_pathv, gl.gl_pathc, sizeof (gl.gl_pathv[0]), compare_basenames);
+
+    for (i = 0; i < gl.gl_pathc; i += locations) {
+      /* Count directories containing files with this name */
+      for (j = i + 1, locations = 1; j < gl.gl_pathc; j++, locations++) {
+        if (compare_basenames(&gl.gl_pathv[i], &gl.gl_pathv[j]) != 0)
+          break;
+      }
+
+      /* Read the first file of this name in the order of the directive */
+      for (j = 0; j < n_dirs; j++) {
+        for (k = 0; k < locations; k++) {
+          path = gl.gl_pathv[i + k];
+          if (strncmp(path, dirs[j], strlen(dirs[j])) == 0 &&
+              strlen(dirs[j]) + 1 + strlen(get_basename(path)) == strlen(path)) {
+            file_handler(path);
+            break;
+          }
+        }
+        if (k < locations)
+          break;
+      }
+    }
+  }
+
+  globfree(&gl);
+
+  return 1;
+}
+
+/* ================================================== */
+
+static void
+parse_confdir(char *line)
+{
+  if (!search_dirs(line, ".conf", CNF_ReadFile))
+    command_parse_error();
+}
+
+/* ================================================== */
+
 static void
 parse_include(char *line)
 {
@@ -1374,13 +1683,147 @@ parse_include(char *line)
 
 /* ================================================== */
 
+static void
+load_source_file(const char *filename)
+{
+  char line[MAX_LINE_LENGTH + 1];
+  FILE *f;
+
+  f = UTI_OpenFile(NULL, filename, NULL, 'r', 0);
+  if (!f)
+    return;
+
+  while (fgets(line, sizeof (line), f)) {
+    /* Require lines to be terminated */
+    if (line[0] == '\0' || line[strlen(line) - 1] != '\n')
+      break;
+
+    CPS_NormalizeLine(line);
+    if (line[0] == '\0')
+      continue;
+
+    parse_source(CPS_SplitWord(line), line, 0);
+  }
+
+  fclose(f);
+}
+
+/* ================================================== */
+
+static int
+compare_sources(const void *a, const void *b)
+{
+  const NTP_Source *sa = a, *sb = b;
+  int d;
+
+  if (!sa->params.name)
+    return -1;
+  if (!sb->params.name)
+    return 1;
+  if ((d = strcmp(sa->params.name, sb->params.name)) != 0)
+    return d;
+  if ((d = (int)(sa->type) - (int)(sb->type)) != 0)
+    return d;
+  if ((d = sa->pool - sb->pool) != 0)
+    return d;
+  if ((d = sa->params.port - sb->params.port) != 0)
+    return d;
+  return memcmp(&sa->params.params, &sb->params.params, sizeof (sa->params.params));
+}
+
+/* ================================================== */
+
+static void
+reload_source_dirs(void)
+{
+  NTP_Source *prev_sources, *new_sources, *source;
+  unsigned int i, j, prev_size, new_size, unresolved;
+  uint32_t *prev_ids, *new_ids;
+  char buf[MAX_LINE_LENGTH];
+  NSR_Status s;
+  int d;
+
+  prev_size = ARR_GetSize(ntp_source_ids);
+  if (prev_size > 0 && ARR_GetSize(ntp_sources) != prev_size)
+    assert(0);
+
+  /* Save the current sources and their configuration IDs */
+  prev_ids = MallocArray(uint32_t, prev_size);
+  memcpy(prev_ids, ARR_GetElements(ntp_source_ids), prev_size * sizeof (prev_ids[0]));
+  prev_sources = MallocArray(NTP_Source, prev_size);
+  memcpy(prev_sources, ARR_GetElements(ntp_sources), prev_size * sizeof (prev_sources[0]));
+
+  /* Load the sources again */
+  ARR_SetSize(ntp_sources, 0);
+  for (i = 0; i < ARR_GetSize(ntp_source_dirs); i++) {
+    if (snprintf(buf, sizeof (buf), "%s",
+                 *(char **)ARR_GetElement(ntp_source_dirs, i)) >= sizeof (buf))
+      assert(0);
+    search_dirs(buf, ".sources", load_source_file);
+  }
+
+  /* Add new and remove existing sources according to the new configuration.
+     Avoid removing and adding the same source again to keep its state. */
+
+  new_size = ARR_GetSize(ntp_sources);
+  new_sources = ARR_GetElements(ntp_sources);
+  ARR_SetSize(ntp_source_ids, new_size);
+  new_ids = ARR_GetElements(ntp_source_ids);
+  unresolved = 0;
+
+  qsort(new_sources, new_size, sizeof (new_sources[0]), compare_sources);
+
+  for (i = j = 0; i < prev_size || j < new_size; ) {
+    if (i < prev_size && j < new_size)
+      d = compare_sources(&prev_sources[i], &new_sources[j]);
+    else
+      d = i < prev_size ? -1 : 1;
+
+    if (d < 0) {
+      /* Remove the missing source */
+      if (prev_sources[i].params.name[0] != '\0')
+        NSR_RemoveSourcesById(prev_ids[i]);
+      i++;
+    } else if (d > 0) {
+      /* Add a newly configured source */
+      source = &new_sources[j];
+      s = NSR_AddSourceByName(source->params.name, source->params.port, source->pool,
+                              source->type, &source->params.params, &new_ids[j]);
+
+      if (s == NSR_UnresolvedName) {
+        unresolved++;
+      } else if (s != NSR_Success) {
+        LOG(LOGS_ERR, "Could not add source %s", source->params.name);
+
+        /* Mark the source as not present */
+        source->params.name[0] = '\0';
+      }
+      j++;
+    } else {
+      /* Keep the existing source */
+      new_ids[j] = prev_ids[i];
+      i++, j++;
+    }
+  }
+
+  for (i = 0; i < prev_size; i++)
+    Free(prev_sources[i].params.name);
+  Free(prev_sources);
+  Free(prev_ids);
+
+  if (unresolved > 0)
+    NSR_ResolveSources();
+}
+
+/* ================================================== */
+
 void
 CNF_CreateDirs(uid_t uid, gid_t gid)
 {
   char *dir;
 
   /* Create a directory for the Unix domain command socket */
-  if (bind_cmd_path[0]) {
+  if (bind_cmd_path) {
     dir = UTI_PathToDir(bind_cmd_path);
     UTI_CreateDirAndParents(dir, 0770, uid, gid);
 
@@ -1389,16 +1832,19 @@ CNF_CreateDirs(uid_t uid, gid_t gid)
        domain sockets are ignored on some systems (e.g. Solaris). */
     if (!UTI_CheckDirPermissions(dir, 0770, uid, gid)) {
       LOG(LOGS_WARN, "Disabled command socket %s", bind_cmd_path);
-      bind_cmd_path[0] = '\0';
+      Free(bind_cmd_path);
+      bind_cmd_path = NULL;
     }
 
     Free(dir);
   }
 
-  if (logdir[0])
-    UTI_CreateDirAndParents(logdir, 0755, uid, gid);
-  if (dumpdir[0])
-    UTI_CreateDirAndParents(dumpdir, 0755, uid, gid);
+  if (logdir)
+    UTI_CreateDirAndParents(logdir, 0750, uid, gid);
+  if (dumpdir)
+    UTI_CreateDirAndParents(dumpdir, 0750, uid, gid);
+  if (nts_dump_dir)
+    UTI_CreateDirAndParents(nts_dump_dir, 0750, uid, gid);
 }
 
 /* ================================================== */
@@ -1415,13 +1861,13 @@ CNF_AddInitSources(void)
     /* Get the default NTP params */
     CPS_ParseNTPSourceAdd(dummy_hostname, &cps_source);
 
-    /* Add the address as an offline iburst server */
+    /* Add the address as a server specified with the iburst option */
     ntp_addr.ip_addr = *(IPAddr *)ARR_GetElement(init_sources, i);
     ntp_addr.port = cps_source.port;
     cps_source.params.iburst = 1;
-    cps_source.params.connectivity = SRC_OFFLINE;
 
-    NSR_AddSource(&ntp_addr, NTP_SERVER, &cps_source.params);
+    if (NSR_AddSource(&ntp_addr, NTP_SERVER, &cps_source.params, NULL) != NSR_Success)
+      LOG(LOGS_ERR, "Could not add source %s", UTI_IPToString(&ntp_addr.ip_addr));
   }
 
   ARR_SetSize(init_sources, 0);
@@ -1434,15 +1880,22 @@ CNF_AddSources(void)
 {
   NTP_Source *source;
   unsigned int i;
+  NSR_Status s;
 
   for (i = 0; i < ARR_GetSize(ntp_sources); i++) {
     source = (NTP_Source *)ARR_GetElement(ntp_sources, i);
-    NSR_AddSourceByName(source->params.name, source->params.port,
-                        source->pool, source->type, &source->params.params);
+
+    s = NSR_AddSourceByName(source->params.name, source->params.port, source->pool,
+                            source->type, &source->params.params, NULL);
+    if (s != NSR_Success && s != NSR_UnresolvedName)
+      LOG(LOGS_ERR, "Could not add source %s", source->params.name);
+
     Free(source->params.name);
   }
 
   ARR_SetSize(ntp_sources, 0);
+
+  reload_source_dirs();
 }
 
 /* ================================================== */
@@ -1450,10 +1903,14 @@ CNF_AddSources(void)
 void
 CNF_AddRefclocks(void)
 {
+  RefclockParameters *refclock;
   unsigned int i;
 
   for (i = 0; i < ARR_GetSize(refclock_sources); i++) {
-    RCL_AddRefclock((RefclockParameters *)ARR_GetElement(refclock_sources, i));
+    refclock = ARR_GetElement(refclock_sources, i);
+    RCL_AddRefclock(refclock);
+    Free(refclock->driver_name);
+    Free(refclock->driver_parameter);
   }
 
   ARR_SetSize(refclock_sources, 0);
@@ -1469,11 +1926,18 @@ CNF_AddBroadcasts(void)
 
   for (i = 0; i < ARR_GetSize(broadcasts); i++) {
     destination = (NTP_Broadcast_Destination *)ARR_GetElement(broadcasts, i);
-    NCR_AddBroadcastDestination(&destination->addr, destination->port,
-                                destination->interval);
+    NCR_AddBroadcastDestination(&destination->addr, destination->interval);
   }
 
   ARR_SetSize(broadcasts, 0);
+}
+
+/* ================================================== */
+
+void
+CNF_ReloadSources(void)
+{
+  reload_source_dirs();
 }
 
 /* ================================================== */
@@ -1639,10 +2103,26 @@ CNF_GetCorrectionTimeRatio(void)
 
 /* ================================================== */
 
+SRC_AuthSelectMode
+CNF_GetAuthSelectMode(void)
+{
+  return authselect_mode;
+}
+
+/* ================================================== */
+
 double
 CNF_GetMaxSlewRate(void)
 {
   return max_slew_rate;
+}
+
+/* ================================================== */
+
+double
+CNF_GetClockPrecision(void)
+{
+  return clock_precision;
 }
 
 /* ================================================== */
@@ -1857,6 +2337,30 @@ CNF_GetBindAcquisitionAddress(int family, IPAddr *addr)
 /* ================================================== */
 
 char *
+CNF_GetBindNtpInterface(void)
+{
+  return bind_ntp_iface;
+}
+
+/* ================================================== */
+
+char *
+CNF_GetBindAcquisitionInterface(void)
+{
+  return bind_acq_iface;
+}
+
+/* ================================================== */
+
+char *
+CNF_GetBindCommandInterface(void)
+{
+  return bind_cmd_iface;
+}
+
+/* ================================================== */
+
+char *
 CNF_GetBindCommandPath(void)
 {
   return bind_cmd_path;
@@ -1873,6 +2377,14 @@ CNF_GetBindCommandAddress(int family, IPAddr *addr)
     *addr = bind_cmd_address6;
   else
     addr->family = IPADDR_UNSPEC;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtpDscp(void)
+{
+  return ntp_dscp;
 }
 
 /* ================================================== */
@@ -1931,6 +2443,16 @@ int CNF_GetNTPRateLimit(int *interval, int *burst, int *leak)
   *burst = ntp_ratelimit_burst;
   *leak = ntp_ratelimit_leak;
   return ntp_ratelimit_enabled;
+}
+
+/* ================================================== */
+
+int CNF_GetNtsRateLimit(int *interval, int *burst, int *leak)
+{
+  *interval = nts_ratelimit_interval;
+  *burst = nts_ratelimit_burst;
+  *leak = nts_ratelimit_leak;
+  return nts_ratelimit_enabled;
 }
 
 /* ================================================== */
@@ -2033,4 +2555,104 @@ CNF_GetHwTsInterface(unsigned int index, CNF_HwTsInterface **iface)
 
   *iface = (CNF_HwTsInterface *)ARR_GetElement(hwts_interfaces, index);
   return 1;
+}
+
+/* ================================================== */
+
+char *
+CNF_GetNtsDumpDir(void)
+{
+  return nts_dump_dir;
+}
+
+/* ================================================== */
+
+char *
+CNF_GetNtsNtpServer(void)
+{
+  return nts_ntp_server;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtsServerCertAndKeyFiles(const char ***certs, const char ***keys)
+{
+  *certs = ARR_GetElements(nts_server_cert_files);
+  *keys = ARR_GetElements(nts_server_key_files);
+
+  if (ARR_GetSize(nts_server_cert_files) != ARR_GetSize(nts_server_key_files))
+    LOG_FATAL("Uneven number of NTS certs and keys");
+
+  return ARR_GetSize(nts_server_cert_files);
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtsServerPort(void)
+{
+  return nts_server_port;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtsServerProcesses(void)
+{
+  return nts_server_processes;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtsServerConnections(void)
+{
+  return nts_server_connections;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtsRefresh(void)
+{
+  return nts_refresh;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtsRotate(void)
+{
+  return nts_rotate;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNtsTrustedCertsPaths(const char ***paths, uint32_t **ids)
+{
+  *paths = ARR_GetElements(nts_trusted_certs_paths);
+  *ids = ARR_GetElements(nts_trusted_certs_ids);
+
+  if (ARR_GetSize(nts_trusted_certs_paths) != ARR_GetSize(nts_trusted_certs_ids))
+    assert(0);
+
+  return ARR_GetSize(nts_trusted_certs_paths);
+}
+
+/* ================================================== */
+
+int
+CNF_GetNoSystemCert(void)
+{
+  return no_system_cert;
+}
+
+/* ================================================== */
+
+int
+CNF_GetNoCertTimeCheck(void)
+{
+  return no_cert_time_check;
 }

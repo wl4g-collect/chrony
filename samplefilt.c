@@ -267,7 +267,7 @@ select_samples(SPF_Instance filter)
     }
   }
 
-  for (i = j = 0, k = -1; i < filter->used; i++) {
+  for (i = j = 0; i < filter->used; i++) {
     if (selected[i] != -1)
       selected[j++] = (selected[i] + filter->used - o) % filter->used;
   }
@@ -386,8 +386,6 @@ combine_selected_samples(SPF_Instance filter, int n, NTP_Sample *result)
   result->root_dispersion = MAX(disp, mean_root_dispersion);
   result->peer_delay = mean_peer_delay;
   result->root_delay = mean_root_delay;
-  result->stratum = last_sample->stratum;
-  result->leap = last_sample->leap;
 
   return 1;
 }

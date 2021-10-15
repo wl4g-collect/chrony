@@ -5,7 +5,7 @@
 #
 # Copyright (C) Richard P. Curnow  1997-2003
 # Copyright (C) Bryan Christianson  2016
-# Copyright (C) Miroslav Lichvar  2009, 2012-2018
+# Copyright (C) Miroslav Lichvar  2009, 2012-2021
 # Copyright (C) Stefan R. Filipek  2019
 #
 # =======================================================================
@@ -33,13 +33,13 @@ test_code () {
     echo "int main(int argc, char **argv) {"
     echo "$code"
     echo "return 0; }"
-  ) > docheck.c
+  ) > conftest.c
 
-  echo "docheck.c:" >> config.log
-  cat docheck.c >> config.log
-  echo $MYCC $MYCFLAGS $MYCPPFLAGS $cflags -o docheck docheck.c $ldflags \
+  echo "conftest.c:" >> config.log
+  cat conftest.c >> config.log
+  echo $MYCC $MYCFLAGS $MYCPPFLAGS $cflags -o conftest conftest.c $ldflags \
     $MYLDFLAGS >> config.log
-  $MYCC $MYCFLAGS $MYCPPFLAGS $cflags -o docheck docheck.c $ldflags \
+  $MYCC $MYCFLAGS $MYCPPFLAGS $cflags -o conftest conftest.c $ldflags \
     $MYLDFLAGS >> config.log 2>&1
 
   if [ $? -eq 0 ]
@@ -50,9 +50,37 @@ test_code () {
     echo "No"
     result=1
   fi
-  rm -f docheck.c docheck
+  rm -f conftest.c conftest
   echo >> config.log
   return $result
+}
+#}}}
+#{{{ test_executable
+test_executable () {
+  name=$1
+  executable=$2
+  options=$3
+
+  printf "%s" "Checking for $name : "
+
+  echo $executable $options >> config.log
+  $executable $options >> config.log 2>&1
+
+  if [ $? -eq 0 ]
+  then
+    echo "Yes"
+    result=0
+  else
+    echo "No"
+    result=1
+  fi
+  echo >> config.log
+  return $result
+}
+#}}}
+#{{{ pkg_config
+pkg_config () {
+  $PKG_CONFIG "$@" 2>> config.log
 }
 #}}}
 #{{{ usage
@@ -80,15 +108,13 @@ for instance \`--prefix=$HOME'.
 
 For better control, use the options below.
   --disable-readline     Disable line editing support
-  --without-readline     Don't use GNU readline even if it is available
   --without-editline     Don't use editline even if it is available
-  --with-readline-includes=DIR Specify where readline include directory is
-  --with-readline-library=DIR Specify where readline lib directory is
-  --with-ncurses-library=DIR Specify where ncurses lib directory is
   --disable-sechash      Disable support for hashes other than MD5
   --without-nettle       Don't use nettle even if it is available
   --without-nss          Don't use NSS even if it is available
   --without-tomcrypt     Don't use libtomcrypt even if it is available
+  --disable-nts          Disable NTS support
+  --without-gnutls       Don't use gnutls even if it is available
   --disable-cmdmon       Disable command and monitoring support
   --disable-ntp          Disable NTP support
   --disable-refclock     Disable reference clock support
@@ -137,6 +163,11 @@ Some influential environment variables:
               headers in a nonstandard directory <include dir>
   LDFLAGS     linker flags, e.g. -L<lib dir> if you have libraries in a
               nonstandard directory <lib dir>
+  PKG_CONFIG  path to pkg-config utility
+  PKG_CONFIG_PATH
+              directories to add to pkg-config's search path
+  PKG_CONFIG_LIBDIR
+              path overriding pkg-config's built-in search path
 
 Use these variables to override the choices made by \`configure' or to help
 it to find libraries and programs with nonstandard names/locations.
@@ -152,13 +183,6 @@ add_def () {
   else
     echo "#define $1 $2" >> config.h
   fi
-}
-#}}}
-#{{{ pkg_config
-pkg_config () {
-  type pkg-config > /dev/null 2> /dev/null || return 1
-
-  pkg-config $@ 2> /dev/null
 }
 #}}}
 #{{{ get_features
@@ -186,23 +210,24 @@ OPERATINGSYSTEM=`uname -s`
 VERSION=`uname -r`
 MACHINE=`uname -m`
 
+LIBS=""
 EXTRA_LIBS=""
 EXTRA_CLI_LIBS=""
 EXTRA_OBJECTS=""
-EXTRA_DEFS=""
-SYSDEFS=""
+EXTRA_CLI_OBJECTS=""
 
 feat_debug=0
 feat_cmdmon=1
 feat_ntp=1
 feat_refclock=1
 feat_readline=1
-try_readline=1
 try_editline=1
 feat_sechash=1
 try_nettle=1
 try_nss=1
 try_tomcrypt=1
+feat_nts=1
+try_gnutls=1
 feat_rtc=1
 try_rtc=0
 feat_droproot=1
@@ -211,9 +236,6 @@ try_clockctl=0
 feat_scfilter=0
 try_seccomp=-1
 priv_ops=""
-readline_lib=""
-readline_inc=""
-ncurses_lib=""
 feat_ipv6=1
 feat_phc=1
 try_phc=0
@@ -244,20 +266,8 @@ do
     --disable-readline )
       feat_readline=0
     ;;
-    --without-readline )
-      try_readline=0
-    ;;
     --without-editline )
       try_editline=0
-    ;;
-    --with-readline-library=* )
-      readline_lib=-L`echo $option | sed -e 's/^.*=//;'`
-    ;;
-    --with-readline-includes=* )
-      readline_inc=-I`echo $option | sed -e 's/^.*=//;'`
-    ;;
-    --with-ncurses-library=* )
-      ncurses_lib=-L`echo $option | sed -e 's/^.*=//;'`
     ;;
     --prefix=* | --install_prefix=* )
       SETPREFIX=`echo $option | sed -e 's/[^=]*=//;'`
@@ -373,6 +383,12 @@ do
     --without-tomcrypt )
       try_tomcrypt=0
     ;;
+    --disable-nts )
+      feat_nts=0
+    ;;
+    --without-gnutls )
+      try_gnutls=0
+    ;;
     --host-system=* )
       OPERATINGSYSTEM=`echo $option | sed -e 's/^.*=//;'`
     ;;
@@ -432,8 +448,7 @@ case $OPERATINGSYSTEM in
     ;;
     Darwin)
         EXTRA_OBJECTS="sys_macosx.o"
-        EXTRA_LIBS="-lresolv"
-        EXTRA_CLI_LIBS="-lresolv"
+        LIBS="$LIBS -lresolv"
         add_def MACOSX
         if [ $feat_droproot = "1" ]; then
           add_def FEAT_PRIVDROP
@@ -452,8 +467,7 @@ case $OPERATINGSYSTEM in
     ;;
     SunOS)
         EXTRA_OBJECTS="sys_generic.o sys_solaris.o sys_timex.o sys_posix.o"
-        EXTRA_LIBS="-lsocket -lnsl -lresolv"
-        EXTRA_CLI_LIBS="-lsocket -lnsl -lresolv"
+        LIBS="$LIBS -lsocket -lnsl -lresolv"
         try_setsched=1
         try_lockmem=1
         add_def SOLARIS
@@ -485,7 +499,7 @@ fi
 
 if [ $feat_ntp = "1" ]; then
   add_def FEAT_NTP
-  EXTRA_OBJECTS="$EXTRA_OBJECTS ntp_core.o ntp_io.o ntp_sources.o"
+  EXTRA_OBJECTS="$EXTRA_OBJECTS ntp_auth.o ntp_core.o ntp_ext.o ntp_io.o ntp_sources.o"
   if [ $feat_ntp_signd = "1" ]; then
     add_def FEAT_SIGND
     EXTRA_OBJECTS="$EXTRA_OBJECTS ntp_signd.o"
@@ -553,6 +567,16 @@ if [ "x$MYCC" = "xgcc" ] || [ "x$MYCC" = "xclang" ]; then
   MYCFLAGS="$MYCFLAGS -Wmissing-prototypes -Wall"
 fi
 
+if [ "x$PKG_CONFIG" = "x" ]; then
+  PKG_CONFIG=pkg-config
+fi
+
+if ! test_executable "pkg-config" $PKG_CONFIG --version; then
+  try_nettle=0
+  try_nss=0
+  try_gnutls=0
+fi
+
 if test_code '64-bit time_t' 'time.h' '' '' '
   char x[sizeof(time_t) > 4 ? 1 : -1] = {0};
   return x[0];'
@@ -592,11 +616,9 @@ then
 fi
 
 MATHCODE='return (int) pow(2.0, log(sqrt((double)argc)));'
-if test_code 'math' 'math.h' '' '' "$MATHCODE"; then
-  LIBS=""
-else
+if ! test_code 'math' 'math.h' '' '' "$MATHCODE"; then
   if test_code 'math in -lm' 'math.h' '' '-lm' "$MATHCODE"; then
-    LIBS="-lm"
+    LIBS="$LIBS -lm"
   else
     echo "error: could not compile/link a program which uses sqrt(), log(), pow()"
     exit 1
@@ -611,10 +633,11 @@ then
 fi
 
 if [ $feat_ipv6 = "1" ] && \
-  test_code 'IPv6 support' 'arpa/inet.h sys/socket.h netinet/in.h' '' "$EXTRA_LIBS" '
+  test_code 'IPv6 support' 'arpa/inet.h sys/socket.h netinet/in.h' '' "$LIBS" '
     struct sockaddr_in6 n;
     char p[100];
     n.sin6_addr = in6addr_any;
+    n.sin6_scope_id = 0;
     return !inet_ntop(AF_INET6, &n.sin6_addr.s6_addr, p, sizeof(p));'
 then
   add_def FEAT_IPV6
@@ -629,6 +652,20 @@ then
       add_def _GNU_SOURCE
       add_def HAVE_IN6_PKTINFO
     fi
+  fi
+fi
+
+if ! test_code 'O_NOFOLLOW flag' 'sys/types.h sys/stat.h fcntl.h' '' "$LIBS" \
+  'return open("/dev/null", O_NOFOLLOW);'
+then
+  if test_code 'O_NOFOLLOW flag with _GNU_SOURCE' 'sys/types.h sys/stat.h fcntl.h' \
+    '-D_GNU_SOURCE' "$LIBS" \
+    'return open("/dev/null", O_NOFOLLOW);'
+  then
+    add_def _GNU_SOURCE
+  else
+    echo "error: open() does not support O_NOFOLLOW flag"
+    exit 1
   fi
 fi
 
@@ -647,15 +684,17 @@ if [ $try_clock_gettime = "1" ]; then
   fi
 fi
 
-if test_code 'getaddrinfo()' 'sys/types.h sys/socket.h netdb.h' '' "$EXTRA_LIBS" \
+if ! test_code 'getaddrinfo()' 'sys/types.h sys/socket.h netdb.h' '' "$LIBS" \
   'return getaddrinfo(0, 0, 0, 0);'
 then
-  add_def HAVE_GETADDRINFO
+  echo "error: getaddrinfo() not found"
+  exit 1
 fi
 
 if [ $feat_asyncdns = "1" ] && \
-  test_code 'pthread' 'pthread.h' '-pthread' '' \
-    'return (int)pthread_create((void *)1, NULL, (void *)1, NULL);'
+  test_code 'pthread' 'pthread.h' '-pthread' '' '
+    pthread_t thread;
+    return (int)pthread_create(&thread, NULL, (void *)1, NULL);'
 then
   add_def FEAT_ASYNCDNS
   add_def USE_PTHREAD_ASYNCDNS
@@ -665,22 +704,22 @@ fi
 
 if test_code 'arc4random_buf()' 'stdlib.h' '' '' 'arc4random_buf(NULL, 0);'; then
   add_def HAVE_ARC4RANDOM
-fi
-
-if test_code 'getrandom()' 'stdlib.h sys/random.h' '' '' \
-    'return getrandom(NULL, 256, 0);'; then
-  add_def HAVE_GETRANDOM
+else
+  if test_code 'getrandom()' 'stdlib.h sys/random.h' '' '' \
+      'return getrandom(NULL, 256, 0);'; then
+    add_def HAVE_GETRANDOM
+  fi
 fi
 
 RECVMMSG_CODE='
   struct mmsghdr hdr;
   return !recvmmsg(0, &hdr, 1, MSG_DONTWAIT, 0);'
 if [ $try_recvmmsg = "1" ]; then
-  if test_code 'recvmmsg()' 'sys/socket.h' '' "$EXTRA_LIBS" "$RECVMMSG_CODE"; then
+  if test_code 'recvmmsg()' 'sys/socket.h' '' "$LIBS" "$RECVMMSG_CODE"; then
     add_def HAVE_RECVMMSG
   else
     if test_code 'recvmmsg() with _GNU_SOURCE' 'sys/socket.h' '-D_GNU_SOURCE' \
-      "$EXTRA_LIBS" "$RECVMMSG_CODE"
+      "$LIBS" "$RECVMMSG_CODE"
     then
       add_def _GNU_SOURCE
       add_def HAVE_RECVMMSG
@@ -731,6 +770,7 @@ if [ "x$timepps_h" != "x" ] && \
     pps_handle_t h = 0;
     pps_info_t i;
     struct timespec ts;
+    ts.tv_sec = ts.tv_nsec = 0;
     return time_pps_fetch(h, PPS_TSFMT_TSPEC, &i, &ts);'
 then
   add_def FEAT_PPS
@@ -759,10 +799,12 @@ if [ $feat_scfilter = "1" ] && [ $try_seccomp = "1" ] && \
     'seccomp_init(SCMP_ACT_KILL);'
 then
   add_def FEAT_SCFILTER
-  # NAME2IPADDRESS shouldn't be enabled with other operations as the helper
-  # process works on one request at the time and the async resolver could
-  # block the main thread
-  priv_ops="NAME2IPADDRESS RELOADDNS"
+  if [ $feat_ntp = "1" ]; then
+    # NAME2IPADDRESS shouldn't be enabled together with a privops operation
+    # used by the main thread as the helper process works on one request at
+    # a time and the async resolver would block the main thread
+    priv_ops="NAME2IPADDRESS RELOADDNS"
+  fi
   EXTRA_LIBS="$EXTRA_LIBS -lseccomp"
 fi
 
@@ -817,6 +859,7 @@ if [ $try_lockmem = "1" ] && \
     'setrlimit(RLIMIT_MEMLOCK, ...)' \
     'sys/resource.h' '' '' '
      struct rlimit rlim;
+     rlim.rlim_max = rlim.rlim_cur = RLIM_INFINITY;
      setrlimit(RLIMIT_MEMLOCK, &rlim);'
 then
   add_def HAVE_SETRLIMIT_MEMLOCK
@@ -830,37 +873,11 @@ fi
 READLINE_LINK=""
 if [ $feat_readline = "1" ]; then
   if [ $try_editline = "1" ]; then
-    if test_code editline 'stdio.h editline/readline.h' \
-      "$readline_inc" "$readline_lib -ledit" \
+    if test_code editline 'stdio.h editline/readline.h' '' '-ledit' \
       'add_history(readline("prompt"));'
     then
       add_def FEAT_READLINE
-      add_def USE_EDITLINE
-      MYCPPFLAGS="$MYCPPFLAGS $readline_inc"
-      READLINE_LINK="$readline_lib -ledit"
-    fi
-  fi
-
-  if [ "x$READLINE_LINK" = "x" ] && [ $try_readline = "1" ]; then
-    if test_code readline 'stdio.h readline/readline.h readline/history.h' \
-      "$readline_inc" "$readline_lib -lreadline" \
-      'add_history(readline("prompt"));'
-    then
-      add_def FEAT_READLINE
-      MYCPPFLAGS="$MYCPPFLAGS $readline_inc"
-      READLINE_LINK="$readline_lib -lreadline"
-    fi
-  fi
-
-  if [ "x$READLINE_LINK" = "x" ] && [ $try_readline = "1" ]; then
-    if test_code 'readline with -lncurses' \
-      'stdio.h readline/readline.h readline/history.h' \
-      "$readline_inc" "$readline_lib $ncurses_lib -lreadline -lncurses" \
-      'add_history(readline("prompt"));'
-    then
-      add_def FEAT_READLINE
-      MYCPPFLAGS="$MYCPPFLAGS $readline_inc"
-      READLINE_LINK="$readline_lib $ncurses_lib -lreadline -lncurses"
+      READLINE_LINK="-ledit"
     fi
   fi
 
@@ -879,22 +896,28 @@ if [ $feat_sechash = "1" ] && [ "x$HASH_LINK" = "x" ]  && [ $try_nettle = "1" ];
   then
     HASH_OBJ="hash_nettle.o"
     HASH_LINK="$test_link"
-    LIBS="$LIBS $HASH_LINK"
     MYCPPFLAGS="$MYCPPFLAGS $test_cflags"
     add_def FEAT_SECHASH
+
+    if test_code 'CMAC in nettle' 'nettle/cmac.h' "$test_cflags" "$test_link" \
+      'cmac128_update(NULL, NULL, NULL, 0, NULL);'
+    then
+      add_def HAVE_CMAC
+      EXTRA_OBJECTS="$EXTRA_OBJECTS cmac_nettle.o"
+      EXTRA_CLI_OBJECTS="$EXTRA_CLI_OBJECTS cmac_nettle.o"
+    fi
   fi
 fi
 
 if [ $feat_sechash = "1" ] && [ "x$HASH_LINK" = "x" ]  && [ $try_nss = "1" ]; then
   test_cflags="`pkg_config --cflags nss`"
-  test_link="`pkg_config --libs-only-L nss` -lfreebl3"
+  test_link="`pkg_config --libs-only-L nss` -lfreebl3 -lnssutil3"
   if test_code 'NSS' 'nss.h hasht.h nsslowhash.h' \
     "$test_cflags" "$test_link" \
     'NSSLOWHASH_Begin(NSSLOWHASH_NewContext(NSSLOW_Init(), HASH_AlgSHA512));'
   then
     HASH_OBJ="hash_nss.o"
     HASH_LINK="$test_link"
-    LIBS="$LIBS $HASH_LINK"
     MYCPPFLAGS="$MYCPPFLAGS $test_cflags"
     add_def FEAT_SECHASH
   fi
@@ -906,9 +929,55 @@ if [ $feat_sechash = "1" ] && [ "x$HASH_LINK" = "x" ] && [ $try_tomcrypt = "1" ]
   then
     HASH_OBJ="hash_tomcrypt.o"
     HASH_LINK="-ltomcrypt"
-    LIBS="$LIBS $HASH_LINK"
     MYCPPFLAGS="$MYCPPFLAGS -I/usr/include/tomcrypt"
     add_def FEAT_SECHASH
+  fi
+fi
+
+EXTRA_OBJECTS="$EXTRA_OBJECTS $HASH_OBJ"
+EXTRA_CLI_OBJECTS="$EXTRA_CLI_OBJECTS $HASH_OBJ"
+LIBS="$LIBS $HASH_LINK"
+
+if [ $feat_ntp = "1" ] && [ $feat_nts = "1" ] && [ $try_gnutls = "1" ]; then
+  test_cflags="`pkg_config --cflags gnutls`"
+  test_link="`pkg_config --libs gnutls`"
+  if test_code 'gnutls' 'gnutls/gnutls.h' \
+    "$test_cflags" "$test_link" '
+      return gnutls_init(NULL, 0) + GNUTLS_TLS1_3 +
+        gnutls_priority_init2(NULL, "", NULL, GNUTLS_PRIORITY_INIT_DEF_APPEND) +
+        gnutls_prf_rfc5705(NULL, 0, "", 0, "", 16, NULL);'
+  then
+    if test_code 'SIV in nettle' \
+      'nettle/siv-cmac.h' "" "$LIBS" \
+      'siv_cmac_aes128_set_key(NULL, NULL);'
+    then
+      EXTRA_OBJECTS="$EXTRA_OBJECTS siv_nettle.o"
+      add_def HAVE_SIV
+      add_def HAVE_NETTLE_SIV_CMAC
+    else
+      if test_code 'SIV in gnutls' 'gnutls/gnutls.h' \
+        "$test_cflags" "$test_link" '
+          return gnutls_aead_cipher_init(NULL, GNUTLS_CIPHER_AES_128_SIV, NULL);'
+      then
+        EXTRA_OBJECTS="$EXTRA_OBJECTS siv_gnutls.o"
+        add_def HAVE_SIV
+      else
+        if test_code 'AES128 in nettle' 'nettle/aes.h' '' "$LIBS" \
+          'aes128_set_encrypt_key(NULL, NULL);'
+        then
+          EXTRA_OBJECTS="$EXTRA_OBJECTS siv_nettle.o"
+          add_def HAVE_SIV
+        fi
+      fi
+    fi
+
+    if grep '#define HAVE_SIV' config.h > /dev/null; then
+      EXTRA_OBJECTS="$EXTRA_OBJECTS nts_ke_client.o nts_ke_server.o nts_ke_session.o"
+      EXTRA_OBJECTS="$EXTRA_OBJECTS nts_ntp_auth.o nts_ntp_client.o nts_ntp_server.o"
+      LIBS="$LIBS $test_link"
+      MYCPPFLAGS="$MYCPPFLAGS $test_cflags"
+      add_def FEAT_NTS
+    fi
   fi
 fi
 
@@ -981,7 +1050,7 @@ add_def MAIL_PROGRAM "\"$mail_program\""
 
 common_features="`get_features SECHASH IPV6 DEBUG`"
 chronyc_features="`get_features READLINE`"
-chronyd_features="`get_features CMDMON NTP REFCLOCK RTC PRIVDROP SCFILTER SIGND ASYNCDNS`"
+chronyd_features="`get_features CMDMON NTP REFCLOCK RTC PRIVDROP SCFILTER SIGND ASYNCDNS NTS`"
 add_def CHRONYC_FEATURES "\"$chronyc_features $common_features\""
 add_def CHRONYD_FEATURES "\"$chronyd_features $common_features\""
 echo "Features : $chronyd_features $chronyc_features $common_features"
@@ -997,15 +1066,15 @@ add_def CHRONY_VERSION "\"${CHRONY_VERSION}\""
 for f in Makefile doc/Makefile test/unit/Makefile
 do
   echo Creating $f
-  sed -e "s%@EXTRA_OBJECTS@%${EXTRA_OBJECTS}%;\
+  sed -e "s%@EXTRA_OBJS@%${EXTRA_OBJECTS}%;\
+          s%@EXTRA_CLI_OBJS@%${EXTRA_CLI_OBJECTS}%;\
           s%@CC@%${MYCC}%;\
           s%@CFLAGS@%${MYCFLAGS}%;\
           s%@CPPFLAGS@%${MYCPPFLAGS}%;\
-          s%@LIBS@%${LIBS}%;\
           s%@LDFLAGS@%${MYLDFLAGS}%;\
+          s%@LIBS@%${LIBS}%;\
           s%@EXTRA_LIBS@%${EXTRA_LIBS}%;\
           s%@EXTRA_CLI_LIBS@%${EXTRA_CLI_LIBS}%;\
-          s%@HASH_OBJ@%${HASH_OBJ}%;\
           s%@SYSCONFDIR@%${SYSCONFDIR}%;\
           s%@BINDIR@%${BINDIR}%;\
           s%@SBINDIR@%${SBINDIR}%;\
