@@ -23,6 +23,7 @@
 #include <cmdparse.h>
 #include <conf.h>
 #include <keys.h>
+#include <ntp_ext.h>
 #include <ntp_io.h>
 #include <sched.h>
 #include <local.h>
@@ -31,7 +32,7 @@
 #ifdef FEAT_NTP
 
 static struct timespec current_time;
-static NTP_Receive_Buffer req_buffer, res_buffer;
+static NTP_Packet req_buffer, res_buffer;
 static int req_length, res_length;
 
 #define NIO_OpenServerSocket(addr) ((addr)->ip_addr.family != IPADDR_UNSPEC ? 100 : 0)
@@ -39,6 +40,7 @@ static int req_length, res_length;
 #define NIO_OpenClientSocket(addr) ((addr)->ip_addr.family != IPADDR_UNSPEC ? 101 : 0)
 #define NIO_CloseClientSocket(fd) assert(fd == 101)
 #define NIO_IsServerSocket(fd) (fd == 100)
+#define NIO_IsServerSocketOpen() 1
 #define NIO_SendPacket(msg, to, from, len, process_tx) (memcpy(&req_buffer, msg, len), req_length = len, 1)
 #define SCH_AddTimeoutByDelay(delay, handler, arg) (1 ? 102 : (handler(arg), 1))
 #define SCH_AddTimeoutInClass(delay, separation, randomness, class, handler, arg) \
@@ -71,7 +73,7 @@ get_random_key_id(void)
   uint32_t id;
 
   do {
-    id = random() % 6 + 2;
+    id = random() % 8 + 2;
   } while (!KEY_KeyKnown(id));
 
   return id;
@@ -100,7 +102,7 @@ send_request(NCR_Instance inst)
     local_ts.err = 0.0;
     local_ts.source = NTP_TS_KERNEL;
 
-    NCR_ProcessTxKnown(inst, &local_addr, &local_ts, &req_buffer.ntp_pkt, req_length);
+    NCR_ProcessTxKnown(inst, &local_addr, &local_ts, &req_buffer, req_length);
   }
 }
 
@@ -119,7 +121,7 @@ process_request(NTP_Remote_Address *remote_addr)
 
   res_length = 0;
   NCR_ProcessRxUnknown(remote_addr, &local_addr, &local_ts,
-                       &req_buffer.ntp_pkt, req_length);
+                       &req_buffer, req_length);
   res_length = req_length;
   res_buffer = req_buffer;
 
@@ -128,7 +130,7 @@ process_request(NTP_Remote_Address *remote_addr)
   if (random() % 2) {
     local_ts.ts = current_time;
     NCR_ProcessTxUnknown(remote_addr, &local_addr, &local_ts,
-                         &res_buffer.ntp_pkt, res_length);
+                         &res_buffer, res_length);
   }
 }
 
@@ -136,12 +138,13 @@ static void
 send_response(int interleaved, int authenticated, int allow_update, int valid_ts, int valid_auth)
 {
   NTP_Packet *req, *res;
-  int auth_len = 0;
+  uint32_t key_id = 0;
+  int i, auth_len = 0, ef_len, efs;
 
-  req = &req_buffer.ntp_pkt;
-  res = &res_buffer.ntp_pkt;
+  req = &req_buffer;
+  res = &res_buffer;
 
-  TEST_CHECK(req_length >= NTP_NORMAL_PACKET_LENGTH);
+  TEST_CHECK(req_length >= NTP_HEADER_LENGTH);
 
   res->lvm = NTP_LVM(LEAP_Normal, NTP_LVM_TO_VERSION(req->lvm),
                      NTP_LVM_TO_MODE(req->lvm) == MODE_CLIENT ? MODE_SERVER : MODE_ACTIVE);
@@ -182,60 +185,98 @@ send_response(int interleaved, int authenticated, int allow_update, int valid_ts
     }
   }
 
+  res_length = NTP_HEADER_LENGTH;
+
+  if (NTP_LVM_TO_VERSION(res->lvm) == 4 && random() % 2) {
+    unsigned char buf[128];
+
+    memset(buf, 0, sizeof (buf));
+    efs = random() % 5;
+
+    for (i = 0; i < efs; i++) {
+      ef_len = (i + 1 == efs ? NTP_MAX_V4_MAC_LENGTH + 4 : NTP_MIN_EF_LENGTH) +
+               4 * (random() % 10);
+      TEST_CHECK(NEF_SetField((unsigned char *)res, sizeof (*res), res_length, 0,
+                              buf, ef_len - 4, &ef_len));
+      res_length += ef_len;
+    }
+  }
+
   if (authenticated) {
-    res->auth_keyid = req->auth_keyid ? req->auth_keyid : htonl(get_random_key_id());
-    auth_len = KEY_GetAuthLength(ntohl(res->auth_keyid));
+    key_id = ntohl(*(uint32_t *)req->extensions);
+    if (key_id == 0)
+      key_id = get_random_key_id();
+    auth_len = KEY_GetAuthLength(key_id);
     assert(auth_len);
-    if (NTP_LVM_TO_VERSION(res->lvm) == 4 && random() % 2)
+    if (NTP_LVM_TO_VERSION(res->lvm) == 4)
       auth_len = MIN(auth_len, NTP_MAX_V4_MAC_LENGTH - 4);
 
-    if (KEY_GenerateAuth(ntohl(res->auth_keyid), (unsigned char *)res,
-                         NTP_NORMAL_PACKET_LENGTH, res->auth_data, auth_len) != auth_len)
+    if (KEY_GenerateAuth(key_id, res, res_length,
+                         (unsigned char *)res + res_length + 4, auth_len) != auth_len)
       assert(0);
-    res_length = NTP_NORMAL_PACKET_LENGTH + 4 + auth_len;
-  } else {
-    res_length = NTP_NORMAL_PACKET_LENGTH;
+    res_length += 4 + auth_len;
   }
 
   if (!valid_auth && authenticated) {
     assert(auth_len);
 
-    switch (random() % 4) {
+    switch (random() % 5) {
       case 0:
-        res->auth_keyid = htonl(ntohl(res->auth_keyid) + 1);
+        key_id++;
         break;
       case 1:
-        res->auth_keyid = htonl(ntohl(res->auth_keyid) ^ 1);
-        if (KEY_GenerateAuth(ntohl(res->auth_keyid), (unsigned char *)res,
-                             NTP_NORMAL_PACKET_LENGTH, res->auth_data, auth_len) != auth_len)
+        key_id ^= 1;
+        if (KEY_GenerateAuth(key_id, res, res_length - auth_len - 4,
+                             (unsigned char *)res + res_length - auth_len, auth_len) != auth_len)
           assert(0);
         break;
       case 2:
-        res->auth_data[random() % auth_len]++;
+        ((unsigned char *)res)[res_length - auth_len + random() % auth_len]++;
         break;
       case 3:
-        res_length = NTP_NORMAL_PACKET_LENGTH + 4 * (random() % ((4 + auth_len) / 4));
-        if (NTP_LVM_TO_VERSION(res->lvm) == 4 &&
-            res_length == NTP_NORMAL_PACKET_LENGTH + NTP_MAX_V4_MAC_LENGTH)
-          res_length -= 4;
+        res_length -= 4 + auth_len;
+        auth_len = 4 * (random() % (auth_len / 4));
+        res_length += 4 + auth_len;
+        break;
+      case 4:
+        if (NTP_LVM_TO_VERSION(res->lvm) == 4 && random() % 2 &&
+            KEY_GetAuthLength(key_id) > NTP_MAX_V4_MAC_LENGTH - 4) {
+          res_length -= 4 + auth_len;
+          auth_len += 4 + 4 * (random() %
+                               ((KEY_GetAuthLength(key_id) - NTP_MAX_V4_MAC_LENGTH - 4) / 4));
+          if (KEY_GenerateAuth(key_id, res, res_length,
+                               (unsigned char *)res + res_length + 4, auth_len) != auth_len)
+              assert(0);
+          res_length += 4 + auth_len;
+        } else {
+          memset((unsigned char *)res + res_length, 0, 4);
+          auth_len += 4;
+          res_length += 4;
+        }
         break;
       default:
         assert(0);
     }
   }
+
+  assert(res_length <= sizeof (*res));
+  assert(res_length >= NTP_HEADER_LENGTH + auth_len);
+
+  if (authenticated)
+    *(uint32_t *)((unsigned char *)res + res_length - auth_len - 4) = htonl(key_id);
 }
 
 static void
-process_response(NCR_Instance inst, int good, int valid, int updated_sync, int updated_init)
+proc_response(NCR_Instance inst, int good, int valid, int updated_sync, int updated_init)
 {
   NTP_Local_Address local_addr;
   NTP_Local_Timestamp local_ts;
   NTP_Packet *res;
   uint32_t prev_rx_count, prev_valid_count;
   struct timespec prev_rx_ts, prev_init_rx_ts;
-  int prev_open_socket, ret;
+  int ret;
 
-  res = &res_buffer.ntp_pkt;
+  res = &res_buffer;
 
   local_addr.ip_addr.family = IPADDR_UNSPEC;
   local_addr.if_index = INVALID_IF_INDEX;
@@ -248,7 +289,6 @@ process_response(NCR_Instance inst, int good, int valid, int updated_sync, int u
   prev_valid_count = inst->report.total_valid_count;
   prev_rx_ts = inst->local_rx.ts;
   prev_init_rx_ts = inst->init_local_rx.ts;
-  prev_open_socket = inst->local_addr.sock_fd != INVALID_SOCK_FD;
 
   ret = NCR_ProcessRxKnown(inst, &local_addr, &local_ts, res, res_length);
 
@@ -257,10 +297,7 @@ process_response(NCR_Instance inst, int good, int valid, int updated_sync, int u
   else if (!good)
     TEST_CHECK(!ret);
 
-  if (prev_open_socket)
-    TEST_CHECK(prev_rx_count + 1 == inst->report.total_rx_count);
-  else
-    TEST_CHECK(prev_rx_count == inst->report.total_rx_count);
+  TEST_CHECK(prev_rx_count + 1 == inst->report.total_rx_count);
 
   if (valid)
     TEST_CHECK(prev_valid_count + 1 == inst->report.total_valid_count);
@@ -284,14 +321,13 @@ process_response(NCR_Instance inst, int good, int valid, int updated_sync, int u
 }
 
 static void
-process_replay(NCR_Instance inst, NTP_Receive_Buffer *packet_queue,
+process_replay(NCR_Instance inst, NTP_Packet *packet_queue,
                int queue_length, int updated_init)
 {
   do {
     res_buffer = packet_queue[random() % queue_length];
-  } while (!UTI_CompareNtp64(&res_buffer.ntp_pkt.transmit_ts,
-                             &inst->remote_ntp_tx));
-  process_response(inst, 0, 0, 0, updated_init);
+  } while (!UTI_CompareNtp64(&res_buffer.transmit_ts, &inst->remote_ntp_tx));
+  proc_response(inst, 0, 0, 0, updated_init);
   advance_time(1e-6);
 }
 
@@ -311,7 +347,7 @@ test_unit(void)
   CPS_NTP_Source source;
   NTP_Remote_Address remote_addr;
   NCR_Instance inst1, inst2;
-  NTP_Receive_Buffer packet_queue[PACKET_QUEUE_LENGTH];
+  NTP_Packet packet_queue[PACKET_QUEUE_LENGTH];
 
   CNF_Initialise(0, 0);
   for (i = 0; i < sizeof conf / sizeof conf[0]; i++)
@@ -321,13 +357,10 @@ test_unit(void)
   TST_RegisterDummyDrivers();
   SCH_Initialise();
   SRC_Initialise();
-  NIO_Initialise(IPADDR_UNSPEC);
+  NIO_Initialise();
   NCR_Initialise();
   REF_Initialise();
-
-  TST_SuspendLogging();
   KEY_Initialise();
-  TST_ResumeLogging();
 
   CNF_SetupAccessRestrictions();
 
@@ -344,7 +377,8 @@ test_unit(void)
     TST_GetRandomAddress(&remote_addr.ip_addr, IPADDR_UNSPEC, -1);
     remote_addr.port = 123;
 
-    inst1 = NCR_GetInstance(&remote_addr, random() % 2 ? NTP_SERVER : NTP_PEER, &source.params);
+    inst1 = NCR_CreateInstance(&remote_addr, random() % 2 ? NTP_SERVER : NTP_PEER,
+                               &source.params, NULL);
     NCR_StartInstance(inst1);
     has_updated = 0;
 
@@ -355,47 +389,52 @@ test_unit(void)
                                      inst1->tx_count < MAX_CLIENT_INTERLEAVED_TX);
       authenticated = random() % 2;
       valid = (!interleaved || (source.params.interleaved && has_updated)) &&
-              (!source.params.authkey || authenticated);
+              ((source.params.authkey == INACTIVE_AUTHKEY) == !authenticated);
       updated = (valid || inst1->mode == MODE_ACTIVE) &&
-                (!source.params.authkey || authenticated);
+                ((source.params.authkey == INACTIVE_AUTHKEY) == !authenticated);
       has_updated = has_updated || updated;
       if (inst1->mode == MODE_CLIENT)
         updated = 0;
+
+      DEBUG_LOG("authkey=%d version=%d interleaved=%d authenticated=%d valid=%d updated=%d has_updated=%d",
+                (int)source.params.authkey, source.params.version,
+                interleaved, authenticated, valid, updated, has_updated);
 
       send_request(inst1);
 
       send_response(interleaved, authenticated, 1, 0, 1);
       DEBUG_LOG("response 1");
-      process_response(inst1, 0, 0, 0, updated);
+      proc_response(inst1, 0, 0, 0, updated);
 
       if (source.params.authkey) {
         send_response(interleaved, authenticated, 1, 1, 0);
         DEBUG_LOG("response 2");
-        process_response(inst1, 0, 0, 0, 0);
+        proc_response(inst1, 0, 0, 0, 0);
       }
 
       send_response(interleaved, authenticated, 1, 1, 1);
       DEBUG_LOG("response 3");
-      process_response(inst1, -1, valid, valid, updated);
+      proc_response(inst1, -1, valid, valid, updated);
       DEBUG_LOG("response 4");
-      process_response(inst1, 0, 0, 0, 0);
+      proc_response(inst1, 0, 0, 0, 0);
 
       advance_time(-1.0);
 
       send_response(interleaved, authenticated, 1, 1, 1);
       DEBUG_LOG("response 5");
-      process_response(inst1, 0, 0, 0, updated && valid);
+      proc_response(inst1, 0, 0, 0, updated && valid);
 
       advance_time(1.0);
 
       send_response(interleaved, authenticated, 1, 1, 1);
       DEBUG_LOG("response 6");
-      process_response(inst1, 0, 0, valid && updated, updated);
+      proc_response(inst1, 0, 0, valid && updated, updated);
     }
 
     NCR_DestroyInstance(inst1);
 
-    inst1 = NCR_GetInstance(&remote_addr, random() % 2 ? NTP_SERVER : NTP_PEER, &source.params);
+    inst1 = NCR_CreateInstance(&remote_addr, random() % 2 ? NTP_SERVER : NTP_PEER,
+                               &source.params, NULL);
     NCR_StartInstance(inst1);
 
     for (j = 0; j < 20; j++) {
@@ -403,15 +442,15 @@ test_unit(void)
 
       send_request(inst1);
       process_request(&remote_addr);
-      process_response(inst1, 1, 1, 1, 0);
+      proc_response(inst1, 1, 1, 1, 0);
       advance_time(1 << inst1->local_poll);
     }
 
     NCR_DestroyInstance(inst1);
 
-    inst1 = NCR_GetInstance(&remote_addr, NTP_PEER, &source.params);
+    inst1 = NCR_CreateInstance(&remote_addr, NTP_PEER, &source.params, NULL);
     NCR_StartInstance(inst1);
-    inst2 = NCR_GetInstance(&remote_addr, NTP_PEER, &source.params);
+    inst2 = NCR_CreateInstance(&remote_addr, NTP_PEER, &source.params, NULL);
     NCR_StartInstance(inst2);
 
     res_length = req_length = 0;
@@ -427,7 +466,7 @@ test_unit(void)
       TEST_CHECK(inst1->valid_timestamps == (j > 0));
 
       DEBUG_LOG("response 1->2");
-      process_response(inst2, j > source.params.interleaved, j > 0, j > 0, 1);
+      proc_response(inst2, j > source.params.interleaved, j > 0, j > 0, 1);
 
       packet_queue[(j * 2) % PACKET_QUEUE_LENGTH] = res_buffer;
 
@@ -447,7 +486,7 @@ test_unit(void)
       TEST_CHECK(inst2->valid_timestamps == (j > 0));
 
       DEBUG_LOG("response 2->1");
-      process_response(inst1, 1, 1, 1, 1);
+      proc_response(inst1, 1, 1, 1, 1);
 
       packet_queue[(j * 2 + 1) % PACKET_QUEUE_LENGTH] = res_buffer;
 

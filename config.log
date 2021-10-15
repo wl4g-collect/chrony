@@ -1,25 +1,28 @@
-docheck.c:
+conftest.c:
 #include "config.h"
 int main(int argc, char **argv) {
 
 return 0; }
-gcc -o docheck docheck.c
+gcc -o conftest conftest.c
 
-docheck.c:
+conftest.c:
 #include "config.h"
 int main(int argc, char **argv) {
 
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 int main(int argc, char **argv) {
 
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+pkg-config --version
+0.29.1
+
+conftest.c:
 #include "config.h"
 #include <time.h>
 int main(int argc, char **argv) {
@@ -27,30 +30,30 @@ int main(int argc, char **argv) {
   char x[sizeof(time_t) > 4 ? 1 : -1] = {0};
   return x[0];
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <math.h>
 int main(int argc, char **argv) {
 return (int) pow(2.0, log(sqrt((double)argc)));
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
-/usr/bin/ld: /tmp/ccOhEovq.o: in function `main':
-/home/wanglsir/Documents/c_cpp-workspace/chrony/docheck.c:4: undefined reference to `log'
-/usr/bin/ld: /home/wanglsir/Documents/c_cpp-workspace/chrony/docheck.c:4: undefined reference to `pow'
-/usr/bin/ld: /home/wanglsir/Documents/c_cpp-workspace/chrony/docheck.c:4: undefined reference to `sqrt'
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+/usr/bin/ld: /tmp/cczTXHUY.o: in function `main':
+/home/wanglsir/Documents/c_cpp-workspace/chrony/conftest.c:4: undefined reference to `log'
+/usr/bin/ld: /home/wanglsir/Documents/c_cpp-workspace/chrony/conftest.c:4: undefined reference to `pow'
+/usr/bin/ld: /home/wanglsir/Documents/c_cpp-workspace/chrony/conftest.c:4: undefined reference to `sqrt'
 collect2: error: ld returned 1 exit status
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <math.h>
 int main(int argc, char **argv) {
 return (int) pow(2.0, log(sqrt((double)argc)));
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -lm -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -lm -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -59,9 +62,9 @@ int main(int argc, char **argv) {
   struct in_pktinfo ipi;
   return sizeof (ipi.ipi_spec_dst.s_addr) + IP_PKTINFO;
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -71,11 +74,12 @@ int main(int argc, char **argv) {
     struct sockaddr_in6 n;
     char p[100];
     n.sin6_addr = in6addr_any;
+    n.sin6_scope_id = 0;
     return !inet_ntop(AF_INET6, &n.sin6_addr.s6_addr, p, sizeof(p));
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -lm -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -83,30 +87,40 @@ int main(int argc, char **argv) {
 
     return sizeof (struct in6_pktinfo) + IPV6_PKTINFO;
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
-docheck.c: In function ‘main’:
-docheck.c:6:20: error: invalid application of ‘sizeof’ to incomplete type ‘struct in6_pktinfo’
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+conftest.c: In function ‘main’:
+conftest.c:6:20: error: invalid application of ‘sizeof’ to incomplete type ‘struct in6_pktinfo’
     6 |     return sizeof (struct in6_pktinfo) + IPV6_PKTINFO;
       |                    ^~~~~~
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 int main(int argc, char **argv) {
 return sizeof (struct in6_pktinfo) + IPV6_PKTINFO;
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -D_GNU_SOURCE -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -D_GNU_SOURCE -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
+#include "config.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+int main(int argc, char **argv) {
+return open("/dev/null", O_NOFOLLOW);
+return 0; }
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -lm -pie -Wl,-z,relro,-z,now
+
+conftest.c:
 #include "config.h"
 #include <time.h>
 int main(int argc, char **argv) {
 clock_gettime(CLOCK_REALTIME, NULL);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -114,45 +128,43 @@ docheck.c:
 int main(int argc, char **argv) {
 return getaddrinfo(0, 0, 0, 0);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -lm -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <pthread.h>
 int main(int argc, char **argv) {
-return (int)pthread_create((void *)1, NULL, (void *)1, NULL);
-return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -pthread -o docheck docheck.c -pie -Wl,-z,relro,-z,now
-docheck.c: In function ‘main’:
-docheck.c:4:1: warning: passing argument 1 to restrict-qualified parameter aliases with argument 3 [-Wrestrict]
-    4 | return (int)pthread_create((void *)1, NULL, (void *)1, NULL);
-      | ^~~~~~
 
-docheck.c:
+    pthread_t thread;
+    return (int)pthread_create(&thread, NULL, (void *)1, NULL);
+return 0; }
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -pthread -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+
+conftest.c:
 #include "config.h"
 #include <stdlib.h>
 int main(int argc, char **argv) {
 arc4random_buf(NULL, 0);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
-docheck.c: In function ‘main’:
-docheck.c:4:1: warning: implicit declaration of function ‘arc4random_buf’ [-Wimplicit-function-declaration]
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+conftest.c: In function ‘main’:
+conftest.c:4:1: warning: implicit declaration of function ‘arc4random_buf’ [-Wimplicit-function-declaration]
     4 | arc4random_buf(NULL, 0);
       | ^~~~~~~~~~~~~~
-/usr/bin/ld: /tmp/ccv2eI5B.o: in function `main':
-/home/wanglsir/Documents/c_cpp-workspace/chrony/docheck.c:4: undefined reference to `arc4random_buf'
+/usr/bin/ld: /tmp/ccbyOveN.o: in function `main':
+/home/wanglsir/Documents/c_cpp-workspace/chrony/conftest.c:4: undefined reference to `arc4random_buf'
 collect2: error: ld returned 1 exit status
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <stdlib.h>
 #include <sys/random.h>
 int main(int argc, char **argv) {
 return getrandom(NULL, 256, 0);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/socket.h>
 int main(int argc, char **argv) {
@@ -160,9 +172,9 @@ int main(int argc, char **argv) {
   struct mmsghdr hdr;
   return !recvmmsg(0, &hdr, 1, MSG_DONTWAIT, 0);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -lm -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -177,9 +189,9 @@ int main(int argc, char **argv) {
            setsockopt(0, SOL_SOCKET, SO_SELECT_ERR_QUEUE + SO_TIMESTAMPING,
                       &val, sizeof (val));
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -192,9 +204,9 @@ int main(int argc, char **argv) {
            SCM_TIMESTAMPING_PKTINFO +
            SOF_TIMESTAMPING_OPT_PKTINFO + SOF_TIMESTAMPING_OPT_TX_SWHW;
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <inttypes.h>
 #include <time.h>
@@ -202,13 +214,13 @@ docheck.c:
 int main(int argc, char **argv) {
 
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
-docheck.c:4:10: fatal error: sys/timepps.h: No such file or directory
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+conftest.c:4:10: fatal error: sys/timepps.h: No such file or directory
     4 | #include <sys/timepps.h>
       |          ^~~~~~~~~~~~~~~
 compilation terminated.
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <inttypes.h>
 #include <time.h>
@@ -216,13 +228,13 @@ docheck.c:
 int main(int argc, char **argv) {
 
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
-docheck.c:4:10: fatal error: timepps.h: No such file or directory
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+conftest.c:4:10: fatal error: timepps.h: No such file or directory
     4 | #include <timepps.h>
       |          ^~~~~~~~~~~
 compilation terminated.
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/types.h>
 #include <pwd.h>
@@ -232,31 +244,31 @@ docheck.c:
 int main(int argc, char **argv) {
 prctl(PR_SET_KEEPCAPS, 1);cap_set_proc(cap_from_text("cap_sys_time=ep"));
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -lcap -pie -Wl,-z,relro,-z,now
-docheck.c:5:10: fatal error: sys/capability.h: No such file or directory
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -lcap -pie -Wl,-z,relro,-z,now
+conftest.c:5:10: fatal error: sys/capability.h: No such file or directory
     5 | #include <sys/capability.h>
       |          ^~~~~~~~~~~~~~~~~~
 compilation terminated.
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/ioctl.h>
 #include <linux/rtc.h>
 int main(int argc, char **argv) {
 ioctl(1, RTC_UIE_ON&RTC_UIE_OFF&RTC_RD_TIME&RTC_SET_TIME, 0&RTC_UF);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/ioctl.h>
 #include <linux/ptp_clock.h>
 int main(int argc, char **argv) {
 ioctl(1, PTP_CLOCK_GETCAPS + PTP_SYS_OFFSET, 0);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <pthread.h>
 #include <sched.h>
@@ -266,82 +278,71 @@ int main(int argc, char **argv) {
      sched_get_priority_max(SCHED_FIFO);
      pthread_setschedparam(pthread_self(), SCHED_FIFO, &sched);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -pthread -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -pthread -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/mman.h>
 int main(int argc, char **argv) {
 
      mlockall(MCL_CURRENT|MCL_FUTURE);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <sys/resource.h>
 int main(int argc, char **argv) {
 
      struct rlimit rlim;
+     rlim.rlim_max = rlim.rlim_cur = RLIM_INFINITY;
      setrlimit(RLIMIT_MEMLOCK, &rlim);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <stdio.h>
 #include <editline/readline.h>
 int main(int argc, char **argv) {
 add_history(readline("prompt"));
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -ledit -pie -Wl,-z,relro,-z,now
-docheck.c:3:10: fatal error: editline/readline.h: No such file or directory
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -ledit -pie -Wl,-z,relro,-z,now
+conftest.c:3:10: fatal error: editline/readline.h: No such file or directory
     3 | #include <editline/readline.h>
       |          ^~~~~~~~~~~~~~~~~~~~~
 compilation terminated.
 
-docheck.c:
-#include "config.h"
-#include <stdio.h>
-#include <readline/readline.h>
-#include <readline/history.h>
-int main(int argc, char **argv) {
-add_history(readline("prompt"));
-return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -lreadline -pie -Wl,-z,relro,-z,now
-docheck.c:3:10: fatal error: readline/readline.h: No such file or directory
-    3 | #include <readline/readline.h>
-      |          ^~~~~~~~~~~~~~~~~~~~~
-compilation terminated.
-
-docheck.c:
-#include "config.h"
-#include <stdio.h>
-#include <readline/readline.h>
-#include <readline/history.h>
-int main(int argc, char **argv) {
-add_history(readline("prompt"));
-return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -lreadline -lncurses -pie -Wl,-z,relro,-z,now
-docheck.c:3:10: fatal error: readline/readline.h: No such file or directory
-    3 | #include <readline/readline.h>
-      |          ^~~~~~~~~~~~~~~~~~~~~
-compilation terminated.
-
-docheck.c:
+Package nettle was not found in the pkg-config search path.
+Perhaps you should add the directory containing `nettle.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'nettle' found
+Package nettle was not found in the pkg-config search path.
+Perhaps you should add the directory containing `nettle.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'nettle' found
+conftest.c:
 #include "config.h"
 #include <nettle/nettle-meta.h>
 #include <nettle/sha2.h>
 int main(int argc, char **argv) {
 return nettle_hashes[0]->context_size;
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -pie -Wl,-z,relro,-z,now
-docheck.c:2:10: fatal error: nettle/nettle-meta.h: No such file or directory
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+conftest.c:2:10: fatal error: nettle/nettle-meta.h: No such file or directory
     2 | #include <nettle/nettle-meta.h>
       |          ^~~~~~~~~~~~~~~~~~~~~~
 compilation terminated.
 
-docheck.c:
+Package nss was not found in the pkg-config search path.
+Perhaps you should add the directory containing `nss.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'nss' found
+Package nss was not found in the pkg-config search path.
+Perhaps you should add the directory containing `nss.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'nss' found
+conftest.c:
 #include "config.h"
 #include <nss.h>
 #include <hasht.h>
@@ -349,21 +350,44 @@ docheck.c:
 int main(int argc, char **argv) {
 NSSLOWHASH_Begin(NSSLOWHASH_NewContext(NSSLOW_Init(), HASH_AlgSHA512));
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o docheck docheck.c -lfreebl3 -pie -Wl,-z,relro,-z,now
-docheck.c:3:10: fatal error: hasht.h: No such file or directory
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -lfreebl3 -lnssutil3 -pie -Wl,-z,relro,-z,now
+conftest.c:3:10: fatal error: hasht.h: No such file or directory
     3 | #include <hasht.h>
       |          ^~~~~~~~~
 compilation terminated.
 
-docheck.c:
+conftest.c:
 #include "config.h"
 #include <tomcrypt.h>
 int main(int argc, char **argv) {
 hash_memory_multi(find_hash("md5"), NULL, NULL, NULL, 0, NULL, 0);
 return 0; }
-gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -I/usr/include/tomcrypt -o docheck docheck.c -ltomcrypt -pie -Wl,-z,relro,-z,now
-docheck.c:2:10: fatal error: tomcrypt.h: No such file or directory
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -I/usr/include/tomcrypt -o conftest conftest.c -ltomcrypt -pie -Wl,-z,relro,-z,now
+conftest.c:2:10: fatal error: tomcrypt.h: No such file or directory
     2 | #include <tomcrypt.h>
       |          ^~~~~~~~~~~~
+compilation terminated.
+
+Package gnutls was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gnutls.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'gnutls' found
+Package gnutls was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gnutls.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'gnutls' found
+conftest.c:
+#include "config.h"
+#include <gnutls/gnutls.h>
+int main(int argc, char **argv) {
+
+      return gnutls_init(NULL, 0) + GNUTLS_TLS1_3 +
+        gnutls_priority_init2(NULL, "", NULL, GNUTLS_PRIORITY_INIT_DEF_APPEND) +
+        gnutls_prf_rfc5705(NULL, 0, "", 0, "", 16, NULL);
+return 0; }
+gcc -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -o conftest conftest.c -pie -Wl,-z,relro,-z,now
+conftest.c:2:10: fatal error: gnutls/gnutls.h: No such file or directory
+    2 | #include <gnutls/gnutls.h>
+      |          ^~~~~~~~~~~~~~~~~
 compilation terminated.
 

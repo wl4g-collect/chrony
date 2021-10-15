@@ -4,7 +4,7 @@
  **********************************************************************
  * Copyright (C) Richard P. Curnow  1997-2003
  * Copyright (C) John G. Hasler  2009
- * Copyright (C) Miroslav Lichvar  2012-2018
+ * Copyright (C) Miroslav Lichvar  2012-2020
  * 
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -38,6 +38,9 @@
 #include "ntp_signd.h"
 #include "ntp_sources.h"
 #include "ntp_core.h"
+#include "nts_ke_server.h"
+#include "nts_ntp_server.h"
+#include "socket.h"
 #include "sources.h"
 #include "sourcestats.h"
 #include "reference.h"
@@ -87,11 +90,11 @@ delete_pidfile(void)
 {
   const char *pidfile = CNF_GetPidFile();
 
-  if (!pidfile[0])
+  if (!pidfile)
     return;
 
-  /* Don't care if this fails, there's not a lot we can do */
-  unlink(pidfile);
+  if (!UTI_RemoveFile(NULL, pidfile, NULL))
+    ;
 }
 
 /* ================================================== */
@@ -101,9 +104,8 @@ MAI_CleanupAndExit(void)
 {
   if (!initialised) exit(exit_status);
   
-  if (CNF_GetDumpDir()[0] != '\0') {
-    SRC_DumpSources();
-  }
+  LCL_CancelOffsetCorrection();
+  SRC_DumpSources();
 
   /* Don't update clock when removing sources */
   REF_SetMode(REF_ModeIgnore);
@@ -112,18 +114,23 @@ MAI_CleanupAndExit(void)
   TMC_Finalise();
   MNL_Finalise();
   CLG_Finalise();
+  NKS_Finalise();
+  NNS_Finalise();
   NSD_Finalise();
   NSR_Finalise();
   SST_Finalise();
   NCR_Finalise();
   NIO_Finalise();
   CAM_Finalise();
+
   KEY_Finalise();
   RCL_Finalise();
   SRC_Finalise();
   REF_Finalise();
   RTC_Finalise();
   SYS_Finalise();
+
+  SCK_Finalise();
   SCH_Finalise();
   LCL_Finalise();
   PRV_Finalise();
@@ -142,7 +149,6 @@ MAI_CleanupAndExit(void)
 static void
 signal_cleanup(int x)
 {
-  if (!initialised) exit(0);
   SCH_QuitProgram();
 }
 
@@ -178,7 +184,7 @@ ntp_source_resolving_end(void)
   NSR_AutoStartSources();
 
   /* Special modes can end only when sources update their reachability.
-     Give up immediatelly if there are no active sources. */
+     Give up immediately if there are no active sources. */
   if (ref_mode != REF_ModeNormal && !SRC_ActiveSources()) {
     REF_SetUnsynchronised();
   }
@@ -253,7 +259,10 @@ check_pidfile(void)
   FILE *in;
   int pid, count;
   
-  in = fopen(pidfile, "r");
+  if (!pidfile)
+    return;
+
+  in = UTI_OpenFile(NULL, pidfile, NULL, 'r', 0);
   if (!in)
     return;
 
@@ -278,16 +287,12 @@ write_pidfile(void)
   const char *pidfile = CNF_GetPidFile();
   FILE *out;
 
-  if (!pidfile[0])
+  if (!pidfile)
     return;
 
-  out = fopen(pidfile, "w");
-  if (!out) {
-    LOG_FATAL("Could not open %s : %s", pidfile, strerror(errno));
-  } else {
-    fprintf(out, "%d\n", (int)getpid());
-    fclose(out);
-  }
+  out = UTI_OpenFile(NULL, pidfile, NULL, 'W', 0644);
+  fprintf(out, "%d\n", (int)getpid());
+  fclose(out);
 }
 
 /* ================================================== */
@@ -370,8 +375,34 @@ go_daemon(void)
 static void
 print_help(const char *progname)
 {
-      printf("Usage: %s [-4|-6] [-n|-d] [-q|-Q] [-r] [-R] [-s] [-t TIMEOUT] [-f FILE|COMMAND...]\n",
-             progname);
+      printf("Usage: %s [OPTION]... [DIRECTIVE]...\n\n"
+             "Options:\n"
+             "  -4\t\tUse IPv4 addresses only\n"
+             "  -6\t\tUse IPv6 addresses only\n"
+             "  -f FILE\tSpecify configuration file (%s)\n"
+             "  -n\t\tDon't run as daemon\n"
+             "  -d\t\tDon't run as daemon and log to stderr\n"
+#if DEBUG > 0
+             "  -d -d\t\tEnable debug messages\n"
+#endif
+             "  -l FILE\tLog to file\n"
+             "  -L LEVEL\tSet logging threshold (0)\n"
+             "  -p\t\tPrint configuration and exit\n"
+             "  -q\t\tSet clock and exit\n"
+             "  -Q\t\tLog offset and exit\n"
+             "  -r\t\tReload dump files\n"
+             "  -R\t\tAdapt configuration for restart\n"
+             "  -s\t\tSet clock from RTC\n"
+             "  -t SECONDS\tExit after elapsed time\n"
+             "  -u USER\tSpecify user (%s)\n"
+             "  -U\t\tDon't check for root\n"
+             "  -F LEVEL\tSet system call filter level (0)\n"
+             "  -P PRIORITY\tSet process priority (0)\n"
+             "  -m\t\tLock memory\n"
+             "  -x\t\tDon't control clock\n"
+             "  -v, --version\tPrint version and exit\n"
+             "  -h, --help\tPrint usage and exit\n",
+             progname, DEFAULT_CONF_FILE, DEFAULT_USER);
 }
 
 /* ================================================== */
@@ -404,16 +435,16 @@ int main
   char *user = NULL, *log_file = NULL;
   struct passwd *pw;
   int opt, debug = 0, nofork = 0, address_family = IPADDR_UNSPEC;
-  int do_init_rtc = 0, restarted = 0, client_only = 0, timeout = 0;
+  int do_init_rtc = 0, restarted = 0, client_only = 0, timeout = -1;
   int scfilter_level = 0, lock_memory = 0, sched_priority = 0;
-  int clock_control = 1, system_log = 1;
-  int config_args = 0;
+  int clock_control = 1, system_log = 1, log_severity = LOGS_INFO;
+  int user_check = 1, config_args = 0, print_config = 0;
 
   do_platform_checks();
 
   LOG_Initialise();
 
-  /* Parse (undocumented) long command-line options */
+  /* Parse long command-line options */
   for (optind = 1; optind < argc; optind++) {
     if (!strcmp("--help", argv[optind])) {
       print_help(progname);
@@ -427,7 +458,7 @@ int main
   optind = 1;
 
   /* Parse short command-line options */
-  while ((opt = getopt(argc, argv, "46df:F:hl:mnP:qQrRst:u:vx")) != -1) {
+  while ((opt = getopt(argc, argv, "46df:F:hl:L:mnpP:qQrRst:u:Uvx")) != -1) {
     switch (opt) {
       case '4':
       case '6':
@@ -447,11 +478,21 @@ int main
       case 'l':
         log_file = optarg;
         break;
+      case 'L':
+        log_severity = parse_int_arg(optarg);
+        break;
       case 'm':
         lock_memory = 1;
         break;
       case 'n':
         nofork = 1;
+        break;
+      case 'p':
+        print_config = 1;
+        user_check = 0;
+        nofork = 1;
+        system_log = 0;
+        log_severity = LOGS_WARN;
         break;
       case 'P':
         sched_priority = parse_int_arg(optarg);
@@ -466,6 +507,7 @@ int main
         ref_mode = REF_ModePrintOnce;
         nofork = 1;
         client_only = 1;
+        user_check = 0;
         clock_control = 0;
         system_log = 0;
         break;
@@ -484,6 +526,9 @@ int main
       case 'u':
         user = optarg;
         break;
+      case 'U':
+        user_check = 0;
+        break;
       case 'v':
         print_version();
         return 0;
@@ -496,7 +541,7 @@ int main
     }
   }
 
-  if (getuid() && !client_only)
+  if (user_check && getuid() != 0)
     LOG_FATAL("Not superuser");
 
   /* Turn into a daemon */
@@ -510,13 +555,15 @@ int main
     LOG_OpenSystemLog();
   }
   
-  LOG_SetDebugLevel(debug);
+  LOG_SetMinSeverity(debug >= 2 ? LOGS_DEBUG : log_severity);
   
   LOG(LOGS_INFO, "chronyd version %s starting (%s)", CHRONY_VERSION, CHRONYD_FEATURES);
 
   DNS_SetAddressFamily(address_family);
 
   CNF_Initialise(restarted, client_only);
+  if (print_config)
+    CNF_EnablePrint();
 
   /* Parse the config file or the remaining command line arguments */
   config_args = argc - optind;
@@ -526,6 +573,9 @@ int main
     for (; optind < argc; optind++)
       CNF_ParseLine(NULL, config_args + optind - argc + 1, argv[optind]);
   }
+
+  if (print_config)
+    return 0;
 
   /* Check whether another chronyd may already be running */
   check_pidfile();
@@ -546,6 +596,11 @@ int main
   PRV_Initialise();
   LCL_Initialise();
   SCH_Initialise();
+  SCK_Initialise(address_family);
+
+  /* Start helper processes if needed */
+  NKS_PreInitialise(pw->pw_uid, pw->pw_gid, scfilter_level);
+
   SYS_Initialise(clock_control);
   RTC_Initialise(do_init_rtc);
   SRC_Initialise();
@@ -553,8 +608,8 @@ int main
   KEY_Initialise();
 
   /* Open privileged ports before dropping root */
-  CAM_Initialise(address_family);
-  NIO_Initialise(address_family);
+  CAM_Initialise();
+  NIO_Initialise();
   NCR_Initialise();
   CNF_SetupAccessRestrictions();
 
@@ -572,12 +627,17 @@ int main
 
   /* Drop root privileges if the specified user has a non-zero UID */
   if (!geteuid() && (pw->pw_uid || pw->pw_gid))
-    SYS_DropRoot(pw->pw_uid, pw->pw_gid);
+    SYS_DropRoot(pw->pw_uid, pw->pw_gid, SYS_MAIN_PROCESS);
+
+  if (!geteuid())
+    LOG(LOGS_WARN, "Running with root privileges");
 
   REF_Initialise();
   SST_Initialise();
   NSR_Initialise();
   NSD_Initialise();
+  NNS_Initialise();
+  NKS_Initialise();
   CLG_Initialise();
   MNL_Initialise();
   TMC_Initialise();
@@ -591,7 +651,7 @@ int main
   CAM_OpenUnixSocket();
 
   if (scfilter_level)
-    SYS_EnableSystemCallFilter(scfilter_level);
+    SYS_EnableSystemCallFilter(scfilter_level, SYS_MAIN_PROCESS);
 
   if (ref_mode == REF_ModeNormal && CNF_GetInitSources() > 0) {
     ref_mode = REF_ModeInitStepSlew;
@@ -600,7 +660,7 @@ int main
   REF_SetModeEndHandler(reference_mode_end);
   REF_SetMode(ref_mode);
 
-  if (timeout > 0)
+  if (timeout >= 0)
     SCH_AddTimeoutByDelay(timeout, quit_timeout, NULL);
 
   if (do_init_rtc) {

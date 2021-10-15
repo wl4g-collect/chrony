@@ -3,7 +3,7 @@
 
  **********************************************************************
  * Copyright (C) Richard P. Curnow  1997-2003
- * Copyright (C) Miroslav Lichvar  2011-2014, 2018
+ * Copyright (C) Miroslav Lichvar  2011-2014, 2018-2020
  * 
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -29,25 +29,24 @@
 
 #include "sysincl.h"
 
+#include <syslog.h>
+
 #include "conf.h"
 #include "logging.h"
+#include "memory.h"
 #include "util.h"
 
 /* This is used by DEBUG_LOG macro */
-int log_debug_enabled = 0;
+LOG_Severity log_min_severity = LOGS_INFO;
 
 /* ================================================== */
 /* Flag indicating we have initialised */
 static int initialised = 0;
 
-static FILE *file_log;
+static FILE *file_log = NULL;
 static int system_log = 0;
 
 static int parent_fd = 0;
-
-#define DEBUG_LEVEL_PRINT_FUNCTION 2
-#define DEBUG_LEVEL_PRINT_DEBUG 2
-static int debug_level = 0;
 
 struct LogFile {
   const char *name;
@@ -63,14 +62,18 @@ static int n_filelogs = 0;
 
 static struct LogFile logfiles[MAX_FILELOGS];
 
+/* Global prefix for debug messages */
+static char *debug_prefix;
+
 /* ================================================== */
 /* Init function */
 
 void
 LOG_Initialise(void)
 {
+  debug_prefix = Strdup("");
   initialised = 1;
-  file_log = stderr;
+  LOG_OpenFileLog(NULL);
 }
 
 /* ================================================== */
@@ -86,6 +89,8 @@ LOG_Finalise(void)
     fclose(file_log);
 
   LOG_CycleLogFiles();
+
+  Free(debug_prefix);
 
   initialised = 0;
 }
@@ -134,7 +139,9 @@ void LOG_Message(LOG_Severity severity,
   time_t t;
   struct tm *tm;
 
-  if (!system_log && file_log) {
+  assert(initialised);
+
+  if (!system_log && file_log && severity >= log_min_severity) {
     /* Don't clutter up syslog with timestamps and internal debugging info */
     time(&t);
     tm = gmtime(&t);
@@ -143,8 +150,8 @@ void LOG_Message(LOG_Severity severity,
       fprintf(file_log, "%s ", buf);
     }
 #if DEBUG > 0
-    if (debug_level >= DEBUG_LEVEL_PRINT_FUNCTION)
-      fprintf(file_log, "%s:%d:(%s) ", filename, line_number, function_name);
+    if (log_min_severity <= LOGS_DEBUG)
+      fprintf(file_log, "%s%s:%d:(%s) ", debug_prefix, filename, line_number, function_name);
 #endif
   }
 
@@ -157,10 +164,12 @@ void LOG_Message(LOG_Severity severity,
     case LOGS_INFO:
     case LOGS_WARN:
     case LOGS_ERR:
-      log_message(0, severity, buf);
+      if (severity >= log_min_severity)
+        log_message(0, severity, buf);
       break;
     case LOGS_FATAL:
-      log_message(1, severity, buf);
+      if (severity >= log_min_severity)
+        log_message(1, severity, buf);
 
       /* Send the message also to the foreground process if it is
          still running, or stderr if it is still open */
@@ -171,6 +180,7 @@ void LOG_Message(LOG_Severity severity,
         system_log = 0;
         log_message(1, severity, buf);
       }
+      exit(1);
       break;
     default:
       assert(0);
@@ -185,9 +195,7 @@ LOG_OpenFileLog(const char *log_file)
   FILE *f;
 
   if (log_file) {
-    f = fopen(log_file, "a");
-    if (!f)
-      LOG_FATAL("Could not open log file %s", log_file);
+    f = UTI_OpenFile(NULL, log_file, NULL, 'A', 0640);
   } else {
     f = stderr;
   }
@@ -213,12 +221,27 @@ LOG_OpenSystemLog(void)
 
 /* ================================================== */
 
-void LOG_SetDebugLevel(int level)
+void LOG_SetMinSeverity(LOG_Severity severity)
 {
-  debug_level = level;
-  if (level >= DEBUG_LEVEL_PRINT_DEBUG) {
-    log_debug_enabled = 1;
-  }
+  /* Don't print any debug messages in a non-debug build */
+  log_min_severity = CLAMP(DEBUG > 0 ? LOGS_DEBUG : LOGS_INFO, severity, LOGS_FATAL);
+}
+
+/* ================================================== */
+
+LOG_Severity
+LOG_GetMinSeverity(void)
+{
+  return log_min_severity;
+}
+
+/* ================================================== */
+
+void
+LOG_SetDebugPrefix(const char *prefix)
+{
+  Free(debug_prefix);
+  debug_prefix = Strdup(prefix);
 }
 
 /* ================================================== */
@@ -246,7 +269,10 @@ LOG_CloseParentFd()
 LOG_FileID
 LOG_FileOpen(const char *name, const char *banner)
 {
-  assert(n_filelogs < MAX_FILELOGS);
+  if (n_filelogs >= MAX_FILELOGS) {
+    assert(0);
+    return -1;
+  }
 
   logfiles[n_filelogs].name = name;
   logfiles[n_filelogs].banner = banner;
@@ -268,24 +294,20 @@ LOG_FileWrite(LOG_FileID id, const char *format, ...)
     return;
 
   if (!logfiles[id].file) {
-    char filename[512], *logdir = CNF_GetLogDir();
+    char *logdir = CNF_GetLogDir();
 
-    if (logdir[0] == '\0') {
+    if (!logdir) {
       LOG(LOGS_WARN, "logdir not specified");
       logfiles[id].name = NULL;
       return;
     }
 
-    if (snprintf(filename, sizeof(filename), "%s/%s.log",
-                 logdir, logfiles[id].name) >= sizeof (filename) ||
-        !(logfiles[id].file = fopen(filename, "a"))) {
-      LOG(LOGS_WARN, "Could not open log file %s", filename);
+    logfiles[id].file = UTI_OpenFile(logdir, logfiles[id].name, ".log", 'a', 0644);
+    if (!logfiles[id].file) {
+      /* Disable the log */
       logfiles[id].name = NULL;
       return;
     }
-
-    /* Close on exec */
-    UTI_FdSetCloexec(fileno(logfiles[id].file));
   }
 
   banner = CNF_GetLogBanner();
@@ -293,7 +315,7 @@ LOG_FileWrite(LOG_FileID id, const char *format, ...)
     char bannerline[256];
     int i, bannerlen;
 
-    bannerlen = strlen(logfiles[id].banner);
+    bannerlen = MIN(strlen(logfiles[id].banner), sizeof (bannerline) - 1);
 
     for (i = 0; i < bannerlen; i++)
       bannerline[i] = '=';

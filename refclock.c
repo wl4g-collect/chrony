@@ -40,6 +40,9 @@
 #include "samplefilt.h"
 #include "sched.h"
 
+/* Maximum offset of locked reference as a fraction of the PPS interval */
+#define PPS_LOCK_LIMIT 0.4
+
 /* list of refclock drivers */
 extern RefclockDriver RCL_SHM_driver;
 extern RefclockDriver RCL_SOCK_driver;
@@ -181,7 +184,7 @@ RCL_AddRefclock(RefclockParameters *params)
     LOG_FATAL("refclock tai option requires leapsectz");
 
   inst->data = NULL;
-  inst->driver_parameter = params->driver_parameter;
+  inst->driver_parameter = Strdup(params->driver_parameter);
   inst->driver_parameter_length = 0;
   inst->driver_poll = params->driver_poll;
   inst->poll = params->poll;
@@ -253,14 +256,13 @@ RCL_AddRefclock(RefclockParameters *params)
   inst->filter = SPF_CreateInstance(MIN(params->filter_length, 4), params->filter_length,
                                     params->max_dispersion, 0.6);
 
-  inst->source = SRC_CreateNewInstance(inst->ref_id, SRC_REFCLOCK, params->sel_options, NULL,
-                                       params->min_samples, params->max_samples, 0.0, 0.0);
+  inst->source = SRC_CreateNewInstance(inst->ref_id, SRC_REFCLOCK, 0, params->sel_options,
+                                       NULL, params->min_samples, params->max_samples,
+                                       0.0, 0.0);
 
   DEBUG_LOG("refclock %s refid=%s poll=%d dpoll=%d filter=%d",
       params->driver_name, UTI_RefidToString(inst->ref_id),
       inst->poll, inst->driver_poll, params->filter_length);
-
-  Free(params->driver_name);
 
   return 1;
 }
@@ -268,7 +270,7 @@ RCL_AddRefclock(RefclockParameters *params)
 void
 RCL_StartRefclocks(void)
 {
-  unsigned int i, j, n;
+  unsigned int i, j, n, lock_index;
 
   n = ARR_GetSize(refclocks);
 
@@ -278,13 +280,31 @@ RCL_StartRefclocks(void)
     SRC_SetActive(inst->source);
     inst->timeout_id = SCH_AddTimeoutByDelay(0.0, poll_timeout, (void *)inst);
 
-    if (inst->lock_ref) {
-      /* Replace lock refid with index to refclocks */
-      for (j = 0; j < n && get_refclock(j)->ref_id != inst->lock_ref; j++)
-        ;
-      inst->lock_ref = j < n ? j : -1;
-    } else
-      inst->lock_ref = -1;
+    /* Replace lock refid with the refclock's index, or -1 if not valid */
+
+    lock_index = -1;
+
+    if (inst->lock_ref != 0) {
+      for (j = 0; j < n; j++) {
+        RCL_Instance inst2 = get_refclock(j);
+
+        if (inst->lock_ref != inst2->ref_id)
+          continue;
+
+        if (inst->driver->poll && inst2->driver->poll &&
+            (double)inst->max_lock_age / inst->pps_rate < UTI_Log2ToDouble(inst2->driver_poll))
+          LOG(LOGS_WARN, "%s maxlockage too small for %s",
+              UTI_RefidToString(inst->ref_id), UTI_RefidToString(inst2->ref_id));
+
+        lock_index = j;
+        break;
+      }
+
+      if (lock_index == -1 || lock_index == i)
+        LOG(LOGS_WARN, "Invalid lock refid %s", UTI_RefidToString(inst->lock_ref));
+    }
+
+    inst->lock_ref = lock_index;
   }
 }
 
@@ -415,13 +435,6 @@ accumulate_sample(RCL_Instance instance, struct timespec *sample_time, double of
   sample.root_delay = instance->delay;
   sample.peer_dispersion = dispersion;
   sample.root_dispersion = dispersion;
-  sample.leap = instance->leap_status;
-
-  /* Handle special case when PPS is used with the local reference */
-  if (instance->pps_active && instance->lock_ref == -1)
-    sample.stratum = pps_stratum(instance, &sample.time);
-  else
-    sample.stratum = instance->stratum;
 
   return SPF_AccumulateSample(instance->filter, &sample);
 }
@@ -567,7 +580,7 @@ RCL_AddCookedPulse(RCL_Instance instance, struct timespec *cooked_time,
     offset += shift;
 
     if (fabs(ref_sample.offset - offset) +
-        ref_sample.root_dispersion + dispersion >= 0.2 / rate) {
+        ref_sample.root_dispersion + dispersion > PPS_LOCK_LIMIT / rate) {
       DEBUG_LOG("refclock pulse ignored offdiff=%.9f refdisp=%.9f disp=%.9f",
                 ref_sample.offset - offset, ref_sample.root_dispersion, dispersion);
       return 0;
@@ -687,7 +700,7 @@ static void
 poll_timeout(void *arg)
 {
   NTP_Sample sample;
-  int poll;
+  int poll, stratum;
 
   RCL_Instance inst = (RCL_Instance)arg;
 
@@ -703,7 +716,14 @@ poll_timeout(void *arg)
     inst->driver_polled = 0;
 
     if (SPF_GetFilteredSample(inst->filter, &sample)) {
+      /* Handle special case when PPS is used with the local reference */
+      if (inst->pps_active && inst->lock_ref == -1)
+        stratum = pps_stratum(inst, &sample.time);
+      else
+        stratum = inst->stratum;
+
       SRC_UpdateReachability(inst->source, 1);
+      SRC_UpdateStatus(inst->source, stratum, inst->leap_status);
       SRC_AccumulateSample(inst->source, &sample);
       SRC_SelectSource(inst->source);
 

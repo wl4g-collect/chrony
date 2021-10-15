@@ -30,9 +30,12 @@
 
 #include "addressing.h"
 #include "reference.h"
+#include "sources.h"
 
 extern void CNF_Initialise(int restarted, int client_only);
 extern void CNF_Finalise(void);
+
+extern void CNF_EnablePrint(void);
 
 extern char *CNF_GetRtcDevice(void);
 
@@ -45,6 +48,8 @@ extern void CNF_AddInitSources(void);
 extern void CNF_AddSources(void);
 extern void CNF_AddBroadcasts(void);
 extern void CNF_AddRefclocks(void);
+
+extern void CNF_ReloadSources(void);
 
 extern int CNF_GetAcquisitionPort(void);
 extern int CNF_GetNTPPort(void);
@@ -74,7 +79,11 @@ extern void CNF_GetFallbackDrifts(int *min, int *max);
 extern void CNF_GetBindAddress(int family, IPAddr *addr);
 extern void CNF_GetBindAcquisitionAddress(int family, IPAddr *addr);
 extern void CNF_GetBindCommandAddress(int family, IPAddr *addr);
+extern char *CNF_GetBindNtpInterface(void);
+extern char *CNF_GetBindAcquisitionInterface(void);
+extern char *CNF_GetBindCommandInterface(void);
 extern char *CNF_GetBindCommandPath(void);
+extern int CNF_GetNtpDscp(void);
 extern char *CNF_GetNtpSigndSocket(void);
 extern char *CNF_GetPidFile(void);
 extern REF_LeapMode CNF_GetLeapSecMode(void);
@@ -86,7 +95,9 @@ extern double CNF_GetMaxClockError(void);
 extern double CNF_GetMaxDrift(void);
 extern double CNF_GetCorrectionTimeRatio(void);
 extern double CNF_GetMaxSlewRate(void);
+extern double CNF_GetClockPrecision(void);
 
+extern SRC_AuthSelectMode CNF_GetAuthSelectMode(void);
 extern double CNF_GetMaxDistance(void);
 extern double CNF_GetMaxJitter(void);
 extern double CNF_GetReselectDistance(void);
@@ -101,6 +112,7 @@ extern int CNF_GetSchedPriority(void);
 extern int CNF_GetLockMemory(void);
 
 extern int CNF_GetNTPRateLimit(int *interval, int *burst, int *leak);
+extern int CNF_GetNtsRateLimit(int *interval, int *burst, int *leak);
 extern int CNF_GetCommandRateLimit(int *interval, int *burst, int *leak);
 extern void CNF_GetSmooth(double *max_freq, double *max_wander, int *leap_only);
 extern void CNF_GetTempComp(char **file, double *interval, char **point_file, double *T0, double *k0, double *k1, double *k2);
@@ -138,5 +150,17 @@ typedef struct {
 } CNF_HwTsInterface;
 
 extern int CNF_GetHwTsInterface(unsigned int index, CNF_HwTsInterface **iface);
+
+extern char *CNF_GetNtsDumpDir(void);
+extern char *CNF_GetNtsNtpServer(void);
+extern int CNF_GetNtsServerCertAndKeyFiles(const char ***certs, const char ***keys);
+extern int CNF_GetNtsServerPort(void);
+extern int CNF_GetNtsServerProcesses(void);
+extern int CNF_GetNtsServerConnections(void);
+extern int CNF_GetNtsRefresh(void);
+extern int CNF_GetNtsRotate(void);
+extern int CNF_GetNtsTrustedCertsPaths(const char ***paths, uint32_t **ids);
+extern int CNF_GetNoSystemCert(void);
+extern int CNF_GetNoCertTimeCheck(void);
 
 #endif /* GOT_CONF_H */

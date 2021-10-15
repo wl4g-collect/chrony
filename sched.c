@@ -65,6 +65,12 @@ static ARR_Instance file_handlers;
 static struct timespec last_select_ts, last_select_ts_raw;
 static double last_select_ts_err;
 
+#define TS_MONO_PRECISION_NS 10000000U
+
+/* Monotonic low-precision timestamp measuring interval since the start */
+static double last_select_ts_mono;
+static uint32_t last_select_ts_mono_ns;
+
 /* ================================================== */
 
 /* Variables to handler the timer queue */
@@ -105,7 +111,8 @@ static struct timespec last_class_dispatch[SCH_NumberOfClasses];
 
 /* ================================================== */
 
-static int need_to_exit;
+/* Flag terminating the main loop, which can be set from a signal handler */
+static volatile int need_to_exit;
 
 /* ================================================== */
 
@@ -136,6 +143,8 @@ SCH_Initialise(void)
 
   LCL_ReadRawTime(&last_select_ts_raw);
   last_select_ts = last_select_ts_raw;
+  last_select_ts_mono = 0.0;
+  last_select_ts_mono_ns = 0;
 
   initialised = 1;
 }
@@ -146,6 +155,8 @@ SCH_Initialise(void)
 void
 SCH_Finalise(void) {
   ARR_DestroyInstance(file_handlers);
+
+  LCL_RemoveParameterChangeHandler(handle_slew, NULL);
 
   initialised = 0;
 }
@@ -243,6 +254,14 @@ SCH_GetLastEventTime(struct timespec *cooked, double *err, struct timespec *raw)
   }
   if (raw)
     *raw = last_select_ts_raw;
+}
+
+/* ================================================== */
+
+double
+SCH_GetLastEventMonoTime(void)
+{
+  return last_select_ts_mono;
 }
 
 /* ================================================== */
@@ -480,12 +499,15 @@ SCH_RemoveTimeout(SCH_TimeoutID id)
 
 static void
 dispatch_timeouts(struct timespec *now) {
+  unsigned long n_done, n_entries_on_start;
   TimerQueueEntry *ptr;
   SCH_TimeoutHandler handler;
   SCH_ArbitraryArgument arg;
-  int n_done = 0, n_entries_on_start = n_timer_queue_entries;
 
-  while (1) {
+  n_entries_on_start = n_timer_queue_entries;
+  n_done = 0;
+
+  do {
     LCL_ReadRawTime(now);
 
     if (!(n_timer_queue_entries > 0 &&
@@ -508,16 +530,21 @@ dispatch_timeouts(struct timespec *now) {
     /* Increment count of timeouts handled */
     ++n_done;
 
-    /* If more timeouts were handled than there were in the timer queue on
-       start and there are now, assume some code is scheduling timeouts with
-       negative delays and abort.  Make the actual limit higher in case the
-       machine is temporarily overloaded and dispatching the handlers takes
-       more time than was delay of a scheduled timeout. */
-    if (n_done > n_timer_queue_entries * 4 &&
-        n_done > n_entries_on_start * 4) {
+    /* If the number of dispatched timeouts is significantly larger than the
+       length of the queue on start and now, assume there is a bug causing
+       an infinite loop by constantly adding a timeout with a zero or negative
+       delay.  Check the actual rate of timeouts to avoid false positives in
+       case the execution slowed down so much (e.g. due to memory thrashing)
+       that it repeatedly takes more time to handle the timeout than is its
+       delay.  This is a safety mechanism intended to stop a full-speed flood
+       of NTP requests due to a bug in the NTP polling. */
+
+    if (n_done > 20 &&
+        n_done > 4 * MAX(n_timer_queue_entries, n_entries_on_start) &&
+        fabs(UTI_DiffTimespecsToDouble(now, &last_select_ts_raw)) / n_done < 0.01)
       LOG_FATAL("Possible infinite loop in scheduling");
-    }
-  }
+
+  } while (!need_to_exit);
 }
 
 /* ================================================== */
@@ -706,6 +733,31 @@ check_current_time(struct timespec *prev_raw, struct timespec *raw, int timeout,
 
 /* ================================================== */
 
+static void
+update_monotonic_time(struct timespec *now, struct timespec *before)
+{
+  struct timespec diff;
+
+  /* Avoid frequent floating-point operations and handle small
+     increments to a large value */
+
+  UTI_DiffTimespecs(&diff, now, before);
+  if (diff.tv_sec == 0) {
+    last_select_ts_mono_ns += diff.tv_nsec;
+  } else {
+    last_select_ts_mono += fabs(UTI_TimespecToDouble(&diff) +
+                                last_select_ts_mono_ns / 1.0e9);
+    last_select_ts_mono_ns = 0;
+  }
+
+  if (last_select_ts_mono_ns > TS_MONO_PRECISION_NS) {
+    last_select_ts_mono += last_select_ts_mono_ns / 1.0e9;
+    last_select_ts_mono_ns = 0;
+  }
+}
+
+/* ================================================== */
+
 void
 SCH_MainLoop(void)
 {
@@ -755,6 +807,8 @@ SCH_MainLoop(void)
 
     LCL_ReadRawTime(&now);
     LCL_CookTime(&now, &cooked, &err);
+
+    update_monotonic_time(&now, &last_select_ts_raw);
 
     /* Check if the time didn't jump unexpectedly */
     if (!check_current_time(&saved_now, &now, status == 0, &saved_tv, ptv)) {

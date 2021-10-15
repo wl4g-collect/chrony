@@ -1,5 +1,5 @@
 # Use public servers from the pool.ntp.org project.
-# Please consider joining the pool (http://www.pool.ntp.org/join.html).
+# Please consider joining the pool (https://www.pool.ntp.org/join.html).
 pool pool.ntp.org iburst
 
 # Record the rate at which the system clock gains/losses time.
@@ -25,8 +25,17 @@ rtcsync
 # Serve time even if not synchronized to a time source.
 #local stratum 10
 
+# Require authentication (nts or key option) for all NTP sources.
+#authselectmode require
+
 # Specify file containing keys for NTP authentication.
 #keyfile /etc/chrony.keys
+
+# Save NTS keys and cookies.
+ntsdumpdir /var/lib/chrony
+
+# Insert/delete leap seconds by slewing instead of stepping.
+#leapsecmode slew
 
 # Get TAI-UTC offset and leap seconds from the system tz database.
 #leapsectz right/UTC

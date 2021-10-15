@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 . ./test.common
 
@@ -8,12 +8,17 @@ check_config_h 'FEAT_REFCLOCK 1' || test_skip
 check_config_h 'FEAT_CMDMON 1' || test_skip
 
 refclock_jitter=$jitter
+client_server_conf="
+server node1.net1.clk
+server 192.168.123.2"
 client_conf="
 refclock SHM 0 noselect
 smoothtime 400 0.001 leaponly"
 
 chronyc_conf="activity
 tracking
+sourcename 192.168.123.1
+sourcename 192.168.123.2
 sources
 sourcestats
 manual list
@@ -25,7 +30,7 @@ run_test || test_fail
 check_chronyd_exit || test_fail
 
 check_chronyc_output "^200 OK
-1 sources online
+2 sources online
 0 sources offline
 0 sources doing burst \(return to online\)
 0 sources doing burst \(return to offline\)
@@ -43,16 +48,18 @@ Root delay      : 0\.000...... seconds
 Root dispersion : 0\.000...... seconds
 Update interval : [0-9]+\.. seconds
 Leap status     : Normal
-210 Number of sources = 2
+node1\.net1\.clk
+192\.168\.123\.2
 MS Name/IP address         Stratum Poll Reach LastRx Last sample               
 ===============================================================================
 #\? SHM0                          0   4   377    [0-9]+ [0-9 +-]+[un]s\[[0-9 +-]+[un]s\] \+/-[ 0-9]+[un]s
 \^\* 192\.168\.123\.1                 1   [67]   377    [0-9]+ [0-9 +-]+[un]s\[[0-9 +-]+[un]s\] \+/-[ 0-9]+[un]s
-210 Number of sources = 2
+\^\? 192\.168\.123\.2                 0   [0-9]+     0     -     \+0ns\[   \+0ns\] \+/-    0ns
 Name/IP Address            NP  NR  Span  Frequency  Freq Skew  Offset  Std Dev
 ==============================================================================
 SHM0                       [0-9 ]+ [0-9 ]+ [0-9 ]+ [ +-][01]\.... [0-9 ]+\....  [0-9 +-]+[un]s [0-9 ]+[un]s
 192\.168\.123\.1              [0-9 ]+ [0-9 ]+ [0-9 ]+ [ +-][01]\.... [0-9 ]+\....  [0-9 +-]+[un]s [0-9 ]+[un]s
+192\.168\.123\.2               0   0     0     \+0\.000   2000\.000     \+0ns  4000ms
 210 n_samples = 0
 #    Date     Time\(UTC\)    Slewed   Original   Residual
 =======================================================
@@ -66,15 +73,36 @@ try: 1, refid: C0A87B01, correction: 0\.000......, skew: .\....
 513 RTC driver not running$" \
 || test_fail
 
+chronyc_conf="tracking"
+dns=1
+
+run_test || test_fail
+check_chronyd_exit || test_fail
+
+check_chronyc_output "^Reference ID    : C0A87B01 \(node1\.net1\.clk\)" \
+	|| test_fail
+
+chronyc_options="-c"
+
+run_test || test_fail
+check_chronyd_exit || test_fail
+
+check_chronyc_output "^C0A87B01,192\.168\.123\.1,2,12623049..\..........,-?0\.0000.....,-?0\.000......,0\.000......,(99|100)\....,-?[0-9]\....,[0-9]\....,0\.000......,0\.000......,[0-9]+\..,Normal$" \
+	|| test_fail
+
+chronyc_options=""
 server_strata=0
 chronyc_start=0
+client_server_conf=""
 client_conf=""
+server_conf="server 192.168.123.1"
 limit=1
 
 for chronyc_conf in \
 	"accheck 1.2.3.4" \
 	"add peer 10.0.0.0 minpoll 2 maxpoll 6" \
-	"add server 10.0.0.0 minpoll 6 maxpoll 10 iburst burst key 1 maxdelay 1e-3 maxdelayratio 10.0 maxdelaydevratio 10.0 mindelay 1e-4 asymmetry 0.5 offset 1e-5 minsamples 6 maxsamples 6 filter 3 offline auto_offline prefer noselect trust require xleave polltarget 20 port 123 presend 7 minstratum 3 version 4" \
+	"add server 10.0.0.0 minpoll 6 maxpoll 10 iburst burst key 1 certset 2 maxdelay 1e-3 maxdelayratio 10.0 maxdelaydevratio 10.0 mindelay 1e-4 asymmetry 0.5 offset 1e-5 minsamples 6 maxsamples 6 filter 3 offline auto_offline prefer noselect trust require xleave polltarget 20 port 123 presend 7 minstratum 3 version 4 nts ntsport 4460 copy" \
+	"add server node1.net1.clk" \
 	"allow 1.2.3.4" \
 	"allow 1.2" \
 	"allow 3.4.5" \
@@ -85,10 +113,14 @@ for chronyc_conf in \
 	"allow ::/0" \
 	"allow" \
 	"allow all 10/24" \
+	"authdata" \
 	"burst 5/10" \
 	"burst 3/5 255.255.255.0/1.2.3.0" \
 	"burst 1/2 1.2.3.0/24" \
 	"clients" \
+	"clients -k" \
+	"clients -p 100" \
+	"clients -r" \
 	"cmdaccheck 1.2.3.4" \
 	"cmdallow 1.2.3.4" \
 	"cmdallow all 1.2.3.0/24" \
@@ -96,6 +128,7 @@ for chronyc_conf in \
 	"cmddeny all 1.2.3.0/24" \
 	"cyclelogs" \
 	"delete 10.0.0.0" \
+	"delete ID#0000000001" \
 	"deny 1.2.3.4" \
 	"deny all 1.2.3.0/24" \
 	"dfreq 1.0e-3" \
@@ -116,6 +149,7 @@ for chronyc_conf in \
 	"maxupdateskew 1.2.3.4 10.0" \
 	"minpoll 1.2.3.4 3" \
 	"minstratum 1.2.3.4 1" \
+	"minstratum ID#0000000001 1" \
 	"ntpdata 1.2.3.4" \
 	"offline" \
 	"offline 255.255.255.0/1.2.3.0" \
@@ -126,8 +160,11 @@ for chronyc_conf in \
 	"polltarget 1.2.3.4 10" \
 	"refresh" \
 	"rekey" \
+	"reload sources" \
 	"reselect" \
 	"reselectdist 1e-3" \
+	"reset sources" \
+	"selectdata" \
 	"settime 16:30" \
 	"settime 16:30:05" \
 	"settime Nov 21, 2015 16:30:05" \
@@ -140,7 +177,7 @@ for chronyc_conf in \
 do
 	run_test || test_fail
 	check_chronyd_exit || test_fail
-	check_chronyc_output "501 Not authorised" || test_fail
+	check_chronyc_output "501 Not authorised$" || test_fail
 done
 
 chronyc_conf="dns -n
@@ -152,6 +189,7 @@ timeout 200
 retries 1
 keygen
 keygen 10 MD5 128
+keygen 11 MD5 40
 help
 quit
 nosuchcommand"
@@ -160,7 +198,48 @@ run_test || test_fail
 
 check_chronyc_output "^1 (MD5|SHA1) HEX:........................................
 10 MD5 HEX:................................
+11 MD5 HEX:....................
 System clock:.*this help
  *$" || test_fail
+
+chronyc_conf="keygen 10 NOSUCHTYPE 128
+help"
+run_test || test_fail
+check_chronyc_output "^Unknown hash function or cipher NOSUCHTYPE\$" || test_fail
+
+if check_config_h 'FEAT_SECHASH 1'; then
+	for hash in MD5 SHA1 SHA256 SHA384 SHA512; do
+		chronyc_conf="keygen 5 $hash"
+		run_test || test_fail
+		check_chronyc_output "^5 $hash HEX:........................................\$" || test_fail
+	done
+fi
+
+if check_config_h 'HAVE_CMAC 1'; then
+	chronyc_conf="keygen 6 AES128
+keygen 7 AES256"
+	run_test || test_fail
+	check_chronyc_output "^6 AES128 HEX:................................
+7 AES256 HEX:................................................................\$" || test_fail
+fi
+
+# Pass every fourth request
+base_delay=$(cat <<-EOF | tr -d '\n'
+  (+ 1e-4
+     (* -1
+        (equal 0.1 from 2)
+        (equal 0.1 (min (% (sum 1) 4) 1) 1)))
+EOF
+)
+limit=15
+
+chronyc_conf="sources"
+run_test || test_fail
+check_chronyc_output "^506 Cannot talk to daemon$" || test_fail
+
+chronyc_conf="retries 3
+sources"
+run_test || test_fail
+check_chronyc_output "^MS.*0ns$" || test_fail
 
 test_pass

@@ -62,7 +62,11 @@ CPS_ParseNTPSourceAdd(char *line, CPS_NTP_Source *src)
   src->params.filter_length = 0;
   src->params.interleaved = 0;
   src->params.sel_options = 0;
+  src->params.nts = 0;
+  src->params.nts_port = SRC_DEFAULT_NTSPORT;
+  src->params.copy = 0;
   src->params.authkey = INACTIVE_AUTHKEY;
+  src->params.cert_set = SRC_DEFAULT_CERTSET;
   src->params.max_delay = SRC_DEFAULT_MAXDELAY;
   src->params.max_delay_ratio = SRC_DEFAULT_MAXDELAYRATIO;
   src->params.max_delay_dev_ratio = SRC_DEFAULT_MAXDELAYDEVRATIO;
@@ -88,6 +92,8 @@ CPS_ParseNTPSourceAdd(char *line, CPS_NTP_Source *src)
       src->params.auto_offline = 1;
     } else if (!strcasecmp(cmd, "burst")) {
       src->params.burst = 1;
+    } else if (!strcasecmp(cmd, "copy")) {
+      src->params.copy = 1;
     } else if (!strcasecmp(cmd, "iburst")) {
       src->params.iburst = 1;
     } else if (!strcasecmp(cmd, "offline")) {
@@ -100,6 +106,9 @@ CPS_ParseNTPSourceAdd(char *line, CPS_NTP_Source *src)
       src->params.sel_options |= SRC_SELECT_REQUIRE;
     } else if (!strcasecmp(cmd, "trust")) {
       src->params.sel_options |= SRC_SELECT_TRUST;
+    } else if (!strcasecmp(cmd, "certset")) {
+      if (sscanf(line, "%"SCNu32"%n", &src->params.cert_set, &n) != 1)
+        return 0;
     } else if (!strcasecmp(cmd, "key")) {
       if (sscanf(line, "%"SCNu32"%n", &src->params.authkey, &n) != 1 ||
           src->params.authkey == INACTIVE_AUTHKEY)
@@ -140,11 +149,16 @@ CPS_ParseNTPSourceAdd(char *line, CPS_NTP_Source *src)
     } else if (!strcasecmp(cmd, "minstratum")) {
       if (sscanf(line, "%d%n", &src->params.min_stratum, &n) != 1)
         return 0;
+    } else if (!strcasecmp(cmd, "nts")) {
+      src->params.nts = 1;
+    } else if (!strcasecmp(cmd, "ntsport")) {
+      if (sscanf(line, "%d%n", &src->params.nts_port, &n) != 1)
+        return 0;
     } else if (!strcasecmp(cmd, "offset")) {
       if (sscanf(line, "%lf%n", &src->params.offset, &n) != 1)
         return 0;
     } else if (!strcasecmp(cmd, "port")) {
-      if (sscanf(line, "%hu%n", &src->port, &n) != 1)
+      if (sscanf(line, "%d%n", &src->port, &n) != 1)
         return 0;
     } else if (!strcasecmp(cmd, "polltarget")) {
       if (sscanf(line, "%d%n", &src->params.poll_target, &n) != 1)
@@ -261,7 +275,7 @@ CPS_SplitWord(char *line)
 /* ================================================== */
 
 int
-CPS_ParseKey(char *line, uint32_t *id, const char **hash, char **key)
+CPS_ParseKey(char *line, uint32_t *id, const char **type, char **key)
 {
   char *s1, *s2, *s3, *s4;
 
@@ -278,10 +292,10 @@ CPS_ParseKey(char *line, uint32_t *id, const char **hash, char **key)
     return 0;
 
   if (*s3) {
-    *hash = s2;
+    *type = s2;
     *key = s3;
   } else {
-    *hash = "MD5";
+    *type = "MD5";
     *key = s2;
   }
 

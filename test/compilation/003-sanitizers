@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run the unit and simulation tests with different compiler sanitizers
 # and under valgrind
 
@@ -14,7 +14,7 @@ fi
 if [ "$ID" = "fedora" ]; then
   echo Checking test dependencies:
   rpm -q {valgrind,gcc,clang}.x86_64 {libgcc,clang-libs}.{x86_64,i686} || exit 1
-  rpm -q {libseccomp,nettle,nss-softokn-freebl,libtomcrypt}-devel.{x86_64,i686} || exit 1
+  rpm -q {libseccomp,nettle,nss-softokn-freebl,libtomcrypt,gnutls}-devel.{x86_64,i686} || exit 1
   echo
 fi
 
@@ -34,6 +34,7 @@ for CC in gcc clang; do
     for extra_config_opts in \
       "--all-privops" \
       "--disable-scfilter" \
+      "--without-gnutls" \
       "--without-nettle" \
       "--without-nettle --without-nss" \
       "--without-nettle --without-nss --without-tomcrypt"; \
@@ -79,7 +80,12 @@ for CC in gcc clang; do
 
         echo
         pushd test/simulation || exit 1
-        CLKNETSIM_RANDOM_SEED=101 ./run -i 1 || exit 1
+        export CLKNETSIM_RANDOM_SEED=101
+        if [ "$arch_opts" = "" -a "$san_options" = "" ]; then
+          CLKNETSIM_CLIENT_WRAPPER=valgrind ./run -i 1 || exit 1
+        else
+          ./run -i 1 || exit 1
+        fi
         popd
       done
     done

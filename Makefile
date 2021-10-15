@@ -21,44 +21,42 @@
 #
 # Makefile template
 
-SYSCONFDIR=/etc
-BINDIR=/home/wanglsir/Documents/c_cpp-workspace/chrony/bin
-SBINDIR=/home/wanglsir/Documents/c_cpp-workspace/chrony/sbin
-LOCALSTATEDIR=/var
-CHRONYVARDIR=/var/lib/chrony
+SYSCONFDIR = /etc
+BINDIR = /home/wanglsir/Documents/c_cpp-workspace/chrony/bin
+SBINDIR = /home/wanglsir/Documents/c_cpp-workspace/chrony/sbin
+LOCALSTATEDIR = /var
+CHRONYVARDIR = /var/lib/chrony
+DESTDIR =
 
 CC = gcc
 CFLAGS = -O2 -g -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong --param=ssp-buffer-size=4 -Wmissing-prototypes -Wall -pthread
 CPPFLAGS = 
+LDFLAGS =  -pie -Wl,-z,relro,-z,now
 
-DESTDIR=
-
-HASH_OBJ = hash_intmd5.o
+EXTRA_OBJS = sys_generic.o sys_linux.o sys_timex.o sys_posix.o cmdmon.o manual.o pktlength.o ntp_auth.o ntp_core.o ntp_ext.o ntp_io.o ntp_sources.o addrfilt.o clientlog.o keys.o nameserv.o refclock.o refclock_phc.o refclock_pps.o refclock_shm.o refclock_sock.o nameserv_async.o hwclock.o ntp_io_linux.o rtc_linux.o hash_intmd5.o
 
 OBJS = array.o cmdparse.o conf.o local.o logging.o main.o memory.o \
-       reference.o regress.o rtc.o samplefilt.o sched.o sources.o sourcestats.o stubs.o \
-       smooth.o sys.o sys_null.o tempcomp.o util.o $(HASH_OBJ)
+       reference.o regress.o rtc.o samplefilt.o sched.o socket.o sources.o sourcestats.o \
+       stubs.o smooth.o sys.o sys_null.o tempcomp.o util.o $(EXTRA_OBJS)
 
-EXTRA_OBJS=sys_generic.o sys_linux.o sys_timex.o sys_posix.o cmdmon.o manual.o pktlength.o ntp_core.o ntp_io.o ntp_sources.o addrfilt.o clientlog.o keys.o nameserv.o refclock.o refclock_phc.o refclock_pps.o refclock_shm.o refclock_sock.o nameserv_async.o hwclock.o ntp_io_linux.o rtc_linux.o
+EXTRA_CLI_OBJS =  hash_intmd5.o
 
 CLI_OBJS = array.o client.o cmdparse.o getdate.o memory.o nameserv.o \
-           pktlength.o util.o $(HASH_OBJ)
+           pktlength.o socket.o util.o $(EXTRA_CLI_OBJS)
 
-ALL_OBJS = $(OBJS) $(EXTRA_OBJS) $(CLI_OBJS)
+ALL_OBJS = $(OBJS) $(CLI_OBJS)
 
-LDFLAGS =  -pie -Wl,-z,relro,-z,now
-LIBS = -lm
-
-EXTRA_LIBS=
-EXTRA_CLI_LIBS= 
+LIBS =  -lm 
+EXTRA_LIBS = 
+EXTRA_CLI_LIBS =  
 
 # Until we have a main procedure we can link, just build object files
 # to test compilation
 
 all : chronyd chronyc
 
-chronyd : $(OBJS) $(EXTRA_OBJS)
-	$(CC) $(CFLAGS) -o chronyd $(OBJS) $(EXTRA_OBJS) $(LDFLAGS) $(LIBS) $(EXTRA_LIBS)
+chronyd : $(OBJS)
+	$(CC) $(CFLAGS) -o chronyd $(OBJS) $(LDFLAGS) $(LIBS) $(EXTRA_LIBS)
 
 chronyc : $(CLI_OBJS)
 	$(CC) $(CFLAGS) -o chronyc $(CLI_OBJS) $(LDFLAGS) $(LIBS) $(EXTRA_CLI_LIBS)
@@ -70,6 +68,7 @@ distclean : clean
 	-rm -f Makefile config.h config.log
 
 clean :
+	$(MAKE) -C test/unit clean
 	-rm -f *.o *.s chronyc chronyd core.* *~
 	-rm -f *.gcda *.gcno
 	-rm -rf .deps
@@ -121,7 +120,7 @@ check : chronyd chronyc
 	cd test/system && ./run
 
 print-chronyd-objects :
-	@echo $(OBJS) $(EXTRA_OBJS)
+	@echo $(OBJS)
 
 Makefile : Makefile.in configure
 	@echo
@@ -135,4 +134,6 @@ Makefile : Makefile.in configure
 .deps/%.d: %.c | .deps
 	@$(CC) -MM $(CPPFLAGS) -MT '$(<:%.c=%.o) $@' $< -o $@
 
+ifndef NODEPS
 -include $(ALL_OBJS:%.o=.deps/%.d)
+endif

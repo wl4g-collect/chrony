@@ -69,7 +69,6 @@ extern void SST_GetFrequencyRange(SST_Stats inst, double *lo, double *hi);
 /* Get data needed for selection */
 extern void
 SST_GetSelectionData(SST_Stats inst, struct timespec *now,
-                     int *stratum, NTP_Leap *leap,
                      double *offset_lo_limit,
                      double *offset_hi_limit,
                      double *root_distance,
@@ -120,7 +119,7 @@ extern int SST_GetDelayTestData(SST_Stats inst, struct timespec *sample_time,
                                 double *last_sample_ago, double *predicted_offset,
                                 double *min_delay, double *skew, double *std_dev);
 
-extern void SST_SaveToFile(SST_Stats inst, FILE *out);
+extern int SST_SaveToFile(SST_Stats inst, FILE *out);
 
 extern int SST_LoadFromFile(SST_Stats inst, FILE *in);
 

@@ -101,7 +101,15 @@
 #define REQ_ADD_PEER3 61
 #define REQ_SHUTDOWN 62
 #define REQ_ONOFFLINE 63
-#define N_REQUEST_TYPES 64
+#define REQ_ADD_SOURCE 64
+#define REQ_NTP_SOURCE_NAME 65
+#define REQ_RESET_SOURCES 66
+#define REQ_AUTH_DATA 67
+#define REQ_CLIENT_ACCESSES_BY_INDEX3 68
+#define REQ_SELECT_DATA 69
+#define REQ_RELOAD_SOURCES 70
+#define REQ_DOFFSET2 71
+#define N_REQUEST_TYPES 72
 
 /* Structure used to exchange timespecs independent of time_t size */
 typedef struct {
@@ -245,6 +253,11 @@ typedef struct {
   int32_t EOR;
 } REQ_Ac_Check;
 
+/* Source types in NTP source requests */
+#define REQ_ADDSRC_SERVER 1
+#define REQ_ADDSRC_PEER 2
+#define REQ_ADDSRC_POOL 3
+
 /* Flags used in NTP source requests */
 #define REQ_ADDSRC_ONLINE 0x1
 #define REQ_ADDSRC_AUTOOFFLINE 0x2
@@ -255,9 +268,12 @@ typedef struct {
 #define REQ_ADDSRC_REQUIRE 0x40
 #define REQ_ADDSRC_INTERLEAVED 0x80
 #define REQ_ADDSRC_BURST 0x100
+#define REQ_ADDSRC_NTS 0x200
+#define REQ_ADDSRC_COPY 0x400
 
 typedef struct {
-  IPAddr ip_addr;
+  uint32_t type;
+  uint8_t name[256];
   uint32_t port;
   int32_t minpoll;
   int32_t maxpoll;
@@ -269,6 +285,7 @@ typedef struct {
   int32_t min_samples;
   int32_t max_samples;
   uint32_t authkey;
+  uint32_t nts_port;
   Float max_delay;
   Float max_delay_ratio;
   Float max_delay_dev_ratio;
@@ -277,7 +294,8 @@ typedef struct {
   Float offset;
   uint32_t flags;
   int32_t filter_length;
-  uint32_t reserved[3];
+  uint32_t cert_set;
+  uint32_t reserved[2];
   int32_t EOR;
 } REQ_NTP_Source;
 
@@ -292,8 +310,7 @@ typedef struct {
 } REQ_Dfreq;
 
 typedef struct {
-  int32_t sec;
-  int32_t usec;
+  Float doffset;
   int32_t EOR;
 } REQ_Doffset;
 
@@ -309,6 +326,8 @@ typedef struct {
 typedef struct {
   uint32_t first_index;
   uint32_t n_clients;
+  uint32_t min_hits;
+  uint32_t reset;
   int32_t EOR;
 } REQ_ClientAccessesByIndex;
 
@@ -334,6 +353,21 @@ typedef struct {
   IPAddr ip_addr;
   int32_t EOR;
 } REQ_NTPData;
+
+typedef struct {
+  IPAddr ip_addr;
+  int32_t EOR;
+} REQ_NTPSourceName;
+
+typedef struct {
+  IPAddr ip_addr;
+  int32_t EOR;
+} REQ_AuthData;
+
+typedef struct {
+  uint32_t index;
+  int32_t EOR;
+} REQ_SelectData;
 
 /* ================================================== */
 
@@ -371,9 +405,10 @@ typedef struct {
    domain socket.
 
    Version 6 (no authentication) : changed format of client accesses by index
-   (using new request/reply types) and manual timestamp, added new fields and
+   (two times), delta offset, and manual timestamp, added new fields and
    flags to NTP source request and report, made length of manual list constant,
-   added new commands: ntpdata, refresh, serverstats, shutdown
+   added new commands: authdata, ntpdata, onoffline, refresh, reset,
+   selectdata, serverstats, shutdown, sourcename
  */
 
 #define PROTO_VERSION_NUMBER 6
@@ -387,8 +422,8 @@ typedef struct {
 #define PROTO_VERSION_PADDING 6
 
 /* The maximum length of padding in request packet, currently
-   defined by MANUAL_LIST */
-#define MAX_PADDING_LENGTH 396
+   defined by CLIENT_ACCESSES_BY_INDEX3 */
+#define MAX_PADDING_LENGTH 484
 
 /* ================================================== */
 
@@ -437,6 +472,9 @@ typedef struct {
     REQ_ReselectDistance reselect_distance;
     REQ_SmoothTime smoothtime;
     REQ_NTPData ntp_data;
+    REQ_NTPSourceName ntp_source_name;
+    REQ_AuthData auth_data;
+    REQ_SelectData select_data;
   } data; /* Command specific parameters */
 
   /* Padding used to prevent traffic amplification.  It only defines the
@@ -473,7 +511,12 @@ typedef struct {
 #define RPY_NTP_DATA 16
 #define RPY_MANUAL_TIMESTAMP2 17
 #define RPY_MANUAL_LIST2 18
-#define N_REPLY_TYPES 19
+#define RPY_NTP_SOURCE_NAME 19
+#define RPY_AUTH_DATA 20
+#define RPY_CLIENT_ACCESSES_BY_INDEX3 21
+#define RPY_SERVER_STATS2 22
+#define RPY_SELECT_DATA 23
+#define N_REPLY_TYPES 24
 
 /* Status codes */
 #define STT_SUCCESS 0
@@ -497,6 +540,7 @@ typedef struct {
 #define STT_INVALIDAF 17
 #define STT_BADPKTVERSION 18
 #define STT_BADPKTLENGTH 19
+#define STT_INVALIDNAME 21
 
 typedef struct {
   int32_t EOR;
@@ -511,17 +555,12 @@ typedef struct {
 #define RPY_SD_MD_PEER   1
 #define RPY_SD_MD_REF    2
 
-#define RPY_SD_ST_SYNC 0
-#define RPY_SD_ST_UNREACH 1
+#define RPY_SD_ST_SELECTED 0
+#define RPY_SD_ST_NONSELECTABLE 1
 #define RPY_SD_ST_FALSETICKER 2
 #define RPY_SD_ST_JITTERY 3
-#define RPY_SD_ST_CANDIDATE 4
-#define RPY_SD_ST_OUTLIER 5
-
-#define RPY_SD_FLAG_NOSELECT 0x1
-#define RPY_SD_FLAG_PREFER 0x2
-#define RPY_SD_FLAG_TRUST 0x4
-#define RPY_SD_FLAG_REQUIRE 0x8
+#define RPY_SD_ST_UNSELECTED 4
+#define RPY_SD_ST_SELECTABLE 5
 
 typedef struct {
   IPAddr ip_addr;
@@ -590,14 +629,17 @@ typedef struct {
 typedef struct {
   IPAddr ip;
   uint32_t ntp_hits;
+  uint32_t nke_hits;
   uint32_t cmd_hits;
   uint32_t ntp_drops;
+  uint32_t nke_drops;
   uint32_t cmd_drops;
   int8_t ntp_interval;
+  int8_t nke_interval;
   int8_t cmd_interval;
   int8_t ntp_timeout_interval;
-  int8_t pad;
   uint32_t last_ntp_hit_ago;
+  uint32_t last_nke_hit_ago;
   uint32_t last_cmd_hit_ago;
 } RPY_ClientAccesses_Client;
 
@@ -611,10 +653,13 @@ typedef struct {
 
 typedef struct {
   uint32_t ntp_hits;
+  uint32_t nke_hits;
   uint32_t cmd_hits;
   uint32_t ntp_drops;
+  uint32_t nke_drops;
   uint32_t cmd_drops;
   uint32_t log_drops;
+  uint32_t ntp_auth_hits;
   int32_t EOR;
 } RPY_ServerStats;
 
@@ -689,6 +734,50 @@ typedef struct {
 } RPY_NTPData;
 
 typedef struct {
+  uint8_t name[256];
+  int32_t EOR;
+} RPY_NTPSourceName;
+
+#define RPY_AD_MD_NONE 0
+#define RPY_AD_MD_SYMMETRIC 1
+#define RPY_AD_MD_NTS 2
+
+typedef struct {
+  uint16_t mode;
+  uint16_t key_type;
+  uint32_t key_id;
+  uint16_t key_length;
+  uint16_t ke_attempts;
+  uint32_t last_ke_ago;
+  uint16_t cookies;
+  uint16_t cookie_length;
+  uint16_t nak;
+  uint16_t pad;
+  int32_t EOR;
+} RPY_AuthData;
+
+#define RPY_SD_OPTION_NOSELECT 0x1
+#define RPY_SD_OPTION_PREFER 0x2
+#define RPY_SD_OPTION_TRUST 0x4
+#define RPY_SD_OPTION_REQUIRE 0x8
+
+typedef struct {
+  uint32_t ref_id;
+  IPAddr ip_addr;
+  uint8_t state_char;
+  uint8_t authentication;
+  uint8_t leap;
+  uint8_t pad;
+  uint16_t conf_options;
+  uint16_t eff_options;
+  uint32_t last_sample_ago;
+  Float score;
+  Float lo_limit;
+  Float hi_limit;
+  int32_t EOR;
+} RPY_SelectData;
+
+typedef struct {
   uint8_t version;
   uint8_t pkt_type;
   uint8_t res1;
@@ -717,6 +806,9 @@ typedef struct {
     RPY_Activity activity;
     RPY_Smoothing smoothing;
     RPY_NTPData ntp_data;
+    RPY_NTPSourceName ntp_source_name;
+    RPY_AuthData auth_data;
+    RPY_SelectData select_data;
   } data; /* Reply specific parameters */
 
 } CMD_Reply;

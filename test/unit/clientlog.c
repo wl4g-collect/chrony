@@ -18,19 +18,25 @@
  **********************************************************************
  */
 
-#include <clientlog.c>
+#include <config.h>
 #include "test.h"
+
+#if defined(FEAT_NTP) || defined(FEAT_CMDMON)
+
+#include <clientlog.c>
 
 void
 test_unit(void)
 {
   int i, j, index;
+  CLG_Service s;
   struct timespec ts;
   IPAddr ip;
   char conf[][100] = {
     "clientloglimit 10000",
     "ratelimit interval 3 burst 4 leak 3",
     "cmdratelimit interval 3 burst 4 leak 3",
+    "ntsratelimit interval 6 burst 8 leak 3",
   };
 
   CNF_Initialise(0, 0);
@@ -51,15 +57,10 @@ test_unit(void)
       TST_GetRandomAddress(&ip, IPADDR_UNSPEC, i % 8 ? -1 : i / 8 % 9);
       DEBUG_LOG("address %s", UTI_IPToString(&ip));
 
-      if (random() % 2) {
-        index = CLG_LogNTPAccess(&ip, &ts);
-        TEST_CHECK(index >= 0);
-        CLG_LimitNTPResponseRate(index);
-      } else {
-        index = CLG_LogCommandAccess(&ip, &ts);
-        TEST_CHECK(index >= 0);
-        CLG_LimitCommandResponseRate(index);
-      }
+      s = random() % MAX_SERVICES;
+      index = CLG_LogServiceAccess(s, &ip, &ts);
+      TEST_CHECK(index >= 0);
+      CLG_LimitServiceRate(s, index);
 
       UTI_AddDoubleToTimespec(&ts, (1 << random() % 14) / 100.0, &ts);
     }
@@ -68,11 +69,13 @@ test_unit(void)
   DEBUG_LOG("records %u", ARR_GetSize(records));
   TEST_CHECK(ARR_GetSize(records) == 64);
 
+  s = CLG_NTP;
+
   for (i = j = 0; i < 10000; i++) {
     ts.tv_sec += 1;
-    index = CLG_LogNTPAccess(&ip, &ts);
+    index = CLG_LogServiceAccess(s, &ip, &ts);
     TEST_CHECK(index >= 0);
-    if (!CLG_LimitNTPResponseRate(index))
+    if (!CLG_LimitServiceRate(s, index))
       j++;
   }
 
@@ -82,3 +85,10 @@ test_unit(void)
   CLG_Finalise();
   CNF_Finalise();
 }
+#else
+void
+test_unit(void)
+{
+  TEST_REQUIRE(0);
+}
+#endif
